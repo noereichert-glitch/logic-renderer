@@ -1,0 +1,41 @@
+{
+  "name": "stemexport",
+  "version": "1.0.0",
+  "description": "Export Logic Pro stems automatically",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "./node_modules/.bin/electron .",
+    "build:python": "python3 build_python.py",
+    "build:electron": "./node_modules/.bin/electron-builder",
+    "build": "python3 build_python.py && ./node_modules/.bin/electron-builder"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.stemexport.app",
+    "productName": "StemExport",
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        "dmg"
+      ]
+    },
+    "extraResources": [
+      {
+        "from": "dist_python/stemexport-server",
+        "to": "stemexport-server"
+      }
+    ],
+    "files": [
+      "electron/**/*",
+      "!python/**/*",
+      "!dist_python/**/*",
+      "!build/**/*"
+    ]
+  }
+}

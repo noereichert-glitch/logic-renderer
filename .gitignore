@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build / distribution output
+build/
+dist/
+dist_python/
+out/
+
+# Python caches & bytecode
+__pycache__/
+*.py[cod]
+
+# Backups & editor cruft
+*.bak
+*.orig
+
+# macOS
+.DS_Store
+
+# Environment / secrets (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+
+# Claude Code local (personal) settings
+.claude/settings.local.json
+
+# Generated tester report (overwritten on every tools/tester.py run)
+STATUS.md
+
+# Stray empty dir from a failed brace-expansion (git ignores empty dirs anyway)
+{electron/
