@@ -45,6 +45,7 @@ from logic_render import (
     LogicRenderBridge,
     LogicCrashedError,
     dismiss_macos_crash_reporter,
+    resolve_project_path,
 )
 from one_click_helpers import (
     sort_wavs_into_subfolder,
@@ -73,6 +74,9 @@ class StemExporter:
 
     # ── main entrypoint ──────────────────────────────────────────────────────
     def run(self):
+        # Resolve package- vs folder-style projects to the inner .logicx (§11) so
+        # both the launch and the project-name derivation use the real project.
+        self.file_path = resolve_project_path(self.file_path)
         project_name = os.path.splitext(os.path.basename(self.file_path))[0]
         project_folder = os.path.join(self.output_folder, project_name)
         os.makedirs(project_folder, exist_ok=True)

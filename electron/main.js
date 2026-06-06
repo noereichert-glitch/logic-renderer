@@ -81,9 +81,13 @@ ipcMain.handle('dialog:openFolder', async () => {
 });
 
 ipcMain.handle('dialog:openProject', async () => {
+  // Accept BOTH Logic save styles: a `.logicx` package (a bundle macOS treats as
+  // a file) and a folder-style project (a directory containing the inner .logicx).
+  // openFile+openDirectory lets the user pick either; the backend resolver (§11)
+  // turns whatever is chosen into the inner .logicx.
   const result = await dialog.showOpenDialog(mainWindow, {
     filters: [{ name: 'Logic Pro Project', extensions: ['logicx'] }],
-    properties: ['openFile']
+    properties: ['openFile', 'openDirectory']
   });
   return result.canceled ? null : result.filePaths[0];
 });

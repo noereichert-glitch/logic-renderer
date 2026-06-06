@@ -5,8 +5,9 @@ Copy each prompt into Claude Code **in order**. Run each on its own
 only confirms it). Don't start a phase until the previous one is green.
 
 Before Phase 1, open Logic Pro once and grant Accessibility + Automation when
-macOS asks. Have a small real `.logicx` project (3–5 tracks, a couple of plugins)
-ready as a fixture.
+macOS asks. Test against the owner's real project: `/Users/reichertnoe/Desktop/logic test.logicx`. Open it when you need to run a
+real export. (A Folder-style copy, `~/Desktop/logic test folder/`, exists too if
+you want to test the package-vs-folder path resolver.)
 
 ---
 
@@ -38,13 +39,13 @@ before any feature work:
 Confirm the active logic-renderer-v* branch. Read docs/Logic_Renderer_Handoff_v1.md
 §4 and §5, and python/logic_render.py (the scaffold with the contract + TODOs).
 
-Goal: a real `01_With_FX` export end to end on my fixture project, then a zip.
+Goal: a real `01_With_FX` export end to end on the fixture at /Users/reichertnoe/Desktop/logic test.logicx, then a zip.
 Implement ONLY the wet pass this prompt (bypass_fx=False); leave the Raw pass for
 the next prompt. Work element-by-element via AppleScript / System Events — NO
 screenshots, NO coordinate/pixel clicks (hard constraint).
 
 Steps:
-1. First, DISCOVER the real UI, don't guess. Open my fixture project in Logic and
+1. First, DISCOVER the real UI, don't guess. Open /Users/reichertnoe/Desktop/logic test.logicx in Logic and
    run small osascript probes to dump:
    - the exact process name,
    - the File ▸ Export submenu item titles (find the "All Tracks as Audio
@@ -58,7 +59,7 @@ Steps:
    that is either a `.logicx` package OR a Folder-style project folder, and
    resolve to the inner `.logicx` (detect `.musicapps-project-folder` or a
    single `*.logicx`). Test with BOTH save styles on the Desktop fixtures
-   (`logic test.logicx` = Package, `logic test folder/` = Folder). Update the
+   (`~/Desktop/logic test.logicx` = Package; `~/Desktop/logic test folder/` = Folder). Update the
    UI drop/picker so dropping the folder works too.
 2. Implement in python/logic_render.py:
    - detect_logic_process_name (confirm/return the real name)
@@ -72,9 +73,15 @@ Steps:
      snapshots). Raise LogicCrashedError if Logic exits mid-wait.
    - quit_logic: ⌘Q without saving, poll for exit, handle a "Don't Save" sheet,
      escalate to terminate/kill.
+3. Range/length handling (Handoff §4a) — fixes the "cursor not at start" bug:
+   before each export, press Return to reset the playhead; read the Cycle button
+   state; if cycle OFF do ⌘A + "Set Locators by Regions" so the range spans first
+   clip → last clip; if cycle ON use the existing loop range. Verify the exported
+   stems start at bar 1 and have the full song length, regardless of where the
+   playhead/cycle was beforehand. Use identical range for the wet and raw passes.
 3. The orchestrator (python/stem_exporter.py) already calls these and sorts WAVs
    into 01_With_FX, runs _validate_set, and zips. Run a full export via the app
-   (or by POSTing /export) on my fixture.
+   (or by POSTing /export) on /Users/reichertnoe/Desktop/logic test.logicx.
 4. Test stack behavior: if my fixture has a Track Stack, report whether a
    Summing Stack exported as ONE combined file vs per-subtrack, and whether a
    Folder Stack exported per-subtrack (this varies by Logic version — see Handoff

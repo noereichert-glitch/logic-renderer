@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from stem_exporter import StemExporter
+from logic_render import resolve_project_path
 
 app = Flask(__name__)
 CORS(app)
@@ -62,10 +63,15 @@ def parse():
     file_path = data.get('file_path')
     if not file_path or not os.path.exists(file_path):
         return jsonify({'error': 'File not found'}), 400
-    # Logic .logicx projects are package bundles; we don't parse them up front.
-    # The export names the WAVs itself, so the file-drop UI just needs a benign
-    # response (same pattern the FL renderer uses for .flp).
-    return jsonify({'track_count': 0, 'tracks': []})
+    # Accept a .logicx package OR a folder-style project; resolve to the inner
+    # .logicx and reject anything that isn't a Logic project (§11). Logic projects
+    # aren't parsed up front (the export names the WAVs itself), so on success the
+    # drop UI just needs a benign response plus the resolved path.
+    try:
+        resolved = resolve_project_path(file_path)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'track_count': 0, 'tracks': [], 'resolved_path': resolved})
 
 
 @app.route('/export', methods=['POST'])

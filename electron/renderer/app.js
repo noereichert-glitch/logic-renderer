@@ -45,7 +45,10 @@ dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('dragover');
   const file = e.dataTransfer.files[0];
-  if (file && file.name.endsWith('.logicx')) handleFileSelect(file.path);
+  // Accept a .logicx package OR a folder-style project (dropped folders have no
+  // extension / empty type). The backend resolver validates & resolves to the
+  // inner .logicx, and shows an error in the file row if it isn't a project.
+  if (file && (file.name.endsWith('.logicx') || file.type === '')) handleFileSelect(file.path);
 });
 dropZone.addEventListener('click', () => document.getElementById('btn-browse').click());
 
@@ -82,7 +85,7 @@ async function handleFileSelect(filePath) {
     } else if (!data.track_count) {
       // Logic .logicx isn't parsed up front (the render names the stems itself) — no
       // track count to show, so just confirm the project is ready to render.
-      document.getElementById('track-count').textContent = 'FL Studio project — ready to render';
+      document.getElementById('track-count').textContent = 'Logic Pro project — ready to render';
     } else {
       const groupCount = (data.tracks || []).filter(t => t.type === 'group').length;
       const tail = groupCount > 0 ? ` · ${groupCount} group${groupCount !== 1 ? 's' : ''}` : '';
@@ -134,7 +137,7 @@ function stopProgressPolling() {
 
 async function startExport() {
   showStep('step-exporting');
-  setExportStatus('Launching FL Studio…', 'Running silently in the background', 5);
+  setExportStatus('Launching Logic Pro…', 'Running silently in the background', 5);
 
   try {
     const res = await fetch(`${API}/export`, {
@@ -283,7 +286,7 @@ async function loadHistory() {
   const list = document.getElementById('history-list');
 
   if (!history.length) {
-    list.innerHTML = '<div class="empty-state">No exports yet. Start by dropping an .logicx file.</div>';
+    list.innerHTML = '<div class="empty-state">No exports yet. Start by dropping a .logicx file.</div>';
     return;
   }
 

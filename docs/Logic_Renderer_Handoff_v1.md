@@ -123,6 +123,33 @@ coordinate clicks.**
 
 ---
 
+## 4a. Export range / song length (playhead & cycle) — REQUIRED
+
+Logic's export range follows the **cycle (loop) region** and play range, NOT clip
+positions read from the file. The `.logicx` project data is a proprietary binary
+(don't parse it — same dead end as FL's PyFLP). Get the length from Logic itself:
+
+Before every export pass, in `export_stems`:
+1. **Reset the playhead to start** — press **Return** ("go to beginning"). This
+   removes the dependency on wherever the cursor was (the bug seen on run 1).
+2. **Detect the cycle state** — the Cycle button in the control bar exposes its
+   on/off to accessibility; read it via System Events.
+   - **Cycle ON** → the user wants a specific range (a loop): leave its locators
+     as-is and export that range.
+   - **Cycle OFF** → **Select All (⌘A)** then **Set Locators by Regions** so the
+     cycle spans exactly the **first clip → last clip** (= full song length), and
+     export that.
+3. Make the export honor that range. If the "All Tracks as Audio Files" dialog in
+   the installed version has a "Limit to Cycle Range"-style option, enable it;
+   otherwise the all-tracks export already spans the full project from bar 1 and
+   steps 1–2 just guarantee a clean, predictable start/length.
+
+TODO(real-machine): confirm (a) the Cycle button's accessibility name + how to
+read its state, (b) the exact menu/key for "Set Locators by Regions" (it may be
+unbound by default — use the Navigate menu item or assign a key), and (c) whether
+the all-tracks dialog has a cycle-range option. Same start position + length must
+be identical across the wet and raw passes so stems line up.
+
 ## 5. Safety (reused, keep all of it)
 
 - **`_validate_set`** — each set must have **≥2 WAVs** (else Logic produced a
