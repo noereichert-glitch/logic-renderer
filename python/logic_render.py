@@ -58,6 +58,18 @@ EXPORT_MENU_ITEM = 'All Tracks as Audio Files…'
 FORMAT_OPTIONS = {'AIFF', 'WAVE', 'CAF'}
 NORMALIZE_OPTIONS = {'Off', 'Overload Protection Only', 'On'}
 
+# The range/silence pop-up (export-dialog pop-up #2). Discovery 2026-06-10 proved
+# the export range is governed ENTIRELY by this accessible pop-up — not the
+# playhead, not the cycle state (see docs/2026-06-10/DISCOVERY_range.md). The
+# driver historically never set it, so it inherited Logic's *sticky* last value
+# (e.g. "Export Cycle Range Only") → "stems start from the middle". We now force
+# it every export. Product-owner decision: always "Trim Silence at File End"
+# (bar 1 → end of last clip, trailing tail trimmed = the full-song deliverable);
+# no UI toggle.
+RANGE_OPTIONS = {'Trim Silence at File End', 'Export Cycle Range Only',
+                 'Extend File Length to Project End'}
+DEFAULT_RANGE_MODE = 'Trim Silence at File End'
+
 
 # ── discovery ──────────────────────────────────────────────────────────────────
 def find_logic() -> str:
@@ -275,6 +287,10 @@ class LogicRenderBridge:
         os.makedirs(output_folder, exist_ok=True)
         proc = self.process_name
 
+        # Defensive: clear a modal "Key Command Assignment Conflicts" sheet that can
+        # block the main window before we try to open the Export menu.
+        self._dismiss_conflict_sheet()
+
         # 1. Open the export dialog.
         _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
             set frontmost to true
@@ -287,6 +303,9 @@ class LogicRenderBridge:
             if not self.is_alive():
                 raise LogicCrashedError('Logic died while opening the export dialog.')
             raise RuntimeError('Export dialog did not open.')
+
+        # Defensive again: the conflict sheet can also surface as the dialog opens.
+        self._dismiss_conflict_sheet()
 
         # 2 + 3 + 4. Set destination, controls, and export — one scripted block.
         desired_bypass = 1 if bypass_fx else 0
@@ -350,6 +369,30 @@ class LogicRenderBridge:
                 end if
             end repeat
 
+            -- Range/silence pop-up (#2) → "Trim Silence at File End" (full song,
+            -- bar 1 → last clip). ROOT-CAUSE FIX: set it explicitly every export so
+            -- we never inherit Logic's sticky last value (which caused mid-project
+            -- starts). Found by value-membership in the range option set (the three
+            -- option sets — format/normalize/range — are disjoint, so no cross-match).
+            -- Fallback if value-membership ever proves ambiguous: it is positionally
+            -- "pop up button 2 of w" (as used by tools/range_discovery.py →
+            -- export_with_range_mode).
+            repeat with p in (every pop up button of w)
+                set v to ""
+                try
+                    set v to (value of p) as text
+                end try
+                if v is in {{"Trim Silence at File End", "Export Cycle Range Only", "Extend File Length to Project End"}} then
+                    if v is not "{_as_str(DEFAULT_RANGE_MODE)}" then
+                        click p
+                        delay 0.3
+                        click menu item "{_as_str(DEFAULT_RANGE_MODE)}" of menu 1 of p
+                        delay 0.2
+                    end if
+                    exit repeat
+                end if
+            end repeat
+
             -- Go.
             click button "Export" of w
         end tell'''
@@ -378,6 +421,32 @@ class LogicRenderBridge:
                 pass
             time.sleep(0.4)
         return False
+
+    def _dismiss_conflict_sheet(self):
+        """If Logic shows the modal "Key Command Assignment Conflicts" sheet
+        (buttons `Show Conflicts` / `Ignore`), click `Ignore` so it can't block the
+        main window or hang the export flow. Clicks any `Ignore` across both windows
+        and their sheets. Best-effort, non-fatal (mirrors `_dismiss_replace_sheet`;
+        same logic as `dismiss_conflicts()` in tools/range_discovery.py)."""
+        try:
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                repeat with w in windows
+                    repeat with b in buttons of w
+                        try
+                            if (name of b) is "Ignore" then click b
+                        end try
+                    end repeat
+                    repeat with s in sheets of w
+                        repeat with b in buttons of s
+                            try
+                                if (name of b) is "Ignore" then click b
+                            end try
+                        end repeat
+                    end repeat
+                end repeat
+            end tell''', timeout=10)
+        except Exception:
+            pass
 
     def _dismiss_replace_sheet(self):
         """If Logic asks to replace existing files, click Replace (we intend to
