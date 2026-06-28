@@ -196,24 +196,91 @@ def _process_alive(name: str) -> bool:
         return False
 
 
+# ── focus masking (P3) ───────────────────────────────────────────────────────────
+# Almost everything on the export path is element-driven and works against a
+# BACKGROUNDED Logic (verified P3: menu-item click, Show Options, pop-up
+# open+select, checkbox click, Export button — see docs/2026-06-28/
+# P3_DISCOVERY_background.md). The ONLY actions that require Logic to be frontmost
+# are the two fixed keystroke chords ⌘⇧G (summon the Go-to-Folder field) and Return
+# (confirm it) — macOS keystrokes always go to the frontmost app. We mask those:
+# wait for an input-idle gap, snapshot the user's frontmost app, flick Logic
+# frontmost for that instant, send the keys, then restore the prior app. The cursor
+# is never moved (no coordinate/cliclick anywhere — keystrokes & app activation
+# don't move it).
+def _input_idle_seconds() -> float:
+    """Seconds since the last HID (keyboard/mouse) event, system-wide. Reads
+    IOHIDSystem's HIDIdleTime (nanoseconds). Returns 0.0 if it can't be read (so we
+    fail SAFE toward 'user is active' → caller waits)."""
+    try:
+        out = subprocess.check_output(['ioreg', '-c', 'IOHIDSystem'], text=True,
+                                      timeout=5)
+    except Exception:
+        return 0.0
+    for line in out.splitlines():
+        if 'HIDIdleTime' in line:
+            try:
+                return int(line.rsplit('=', 1)[1].strip()) / 1_000_000_000.0
+            except (ValueError, IndexError):
+                return 0.0
+    return 0.0
+
+
+def _frontmost_app_name() -> str:
+    try:
+        return _osascript('tell application "System Events" to get name of first '
+                          'process whose frontmost is true', timeout=8)
+    except Exception:
+        return ''
+
+
+def _set_app_frontmost(name: str):
+    if not name:
+        return
+    try:
+        _osascript(f'tell application "System Events" to set frontmost of process '
+                   f'"{_as_str(name)}" to true', timeout=8)
+    except Exception:
+        pass
+
+
 # ── the bridge ──────────────────────────────────────────────────────────────────
 class LogicRenderBridge:
     """launch → wait_for_logic_ready → export_stems(bypass_fx) → quit_logic.
     Mirrors FLRenderBridge so the orchestrator reads the same. Context-manager
     capable."""
 
-    def __init__(self):
+    def __init__(self, headless: bool = True):
         self.app_path = find_logic()
         self.process_name = LOGIC_PROCESS_NAME
         self._proc = None
+        # headless (default on): drive the export by AX element VALUE + backgrounded
+        # element clicks (no `set frontmost`, cursor never moves). The destination's
+        # two irreducible keystroke chords (⌘⇧G / Return) are focus-MASKED: fired
+        # during an input-idle gap with the user's frontmost app restored after. The
+        # legacy keystroke+frontmost path is kept behind `if not self.headless:` as a
+        # fallback. Invisible-render phase, Tier 0 (docs/2026-06-28/
+        # Invisible_Render_Handoff_v1.md, P2/P3).
+        self.headless = headless
+        # Idle-mask tunables (P3): require this many seconds since the last HID event
+        # before stealing focus for the masked chords, waiting up to _idle_timeout
+        # for such a gap (then proceed best-effort so a render never hangs forever).
+        self._idle_min = 0.7
+        self._idle_timeout = 60.0
 
     # — lifecycle —
     def launch(self, project_path: str):
-        """Open the .logicx project. Resolves package/folder styles first. `open -a`
+        """Open the .logicx project. Resolves package/folder styles first. `open`
         lets Logic own its own process; we track liveness via pgrep, not a child
-        handle. Idempotent if Logic already has the project open (open just focuses)."""
+        handle. Idempotent if Logic already has the project open.
+
+        Headless: `open -g` opens Logic in the BACKGROUND so the launch never steals
+        focus — essential, otherwise Logic is frontmost from the start and the
+        focus-masking would only ever restore focus to Logic. Legacy: plain `open -a`
+        (activates Logic), kept behind `if not self.headless:`."""
         resolved = resolve_project_path(project_path)
-        subprocess.run(['open', '-a', self.app_path, resolved], check=True)
+        cmd = ['open', '-g', '-a', self.app_path, resolved] if self.headless \
+            else ['open', '-a', self.app_path, resolved]
+        subprocess.run(cmd, check=True)
         self.process_name = detect_logic_process_name()
 
     def relaunch(self, project_path: str):
@@ -244,8 +311,13 @@ class LogicRenderBridge:
             return False
 
         proc = self.process_name
+        # Headless: a blocking free-floating AXDialog (e.g. the audio-interface
+        # alert) must NOT count as "ready" (catalog requirement #2). We refuse ready
+        # while one is present and clear it via _auto_dismiss_dialogs() each tick.
+        dialog_guard = ('if (count of (windows whose subrole is "AXDialog")) > 0 '
+                        'then return "no"\n            ' if self.headless else '')
         script = f'''tell application "System Events" to tell process "{_as_str(proc)}"
-            set wins to (every window whose subrole is "AXStandardWindow")
+            {dialog_guard}set wins to (every window whose subrole is "AXStandardWindow")
             if (count of wins) is 0 then return "no"
             repeat with w in wins
                 set nm to name of w
@@ -257,6 +329,8 @@ class LogicRenderBridge:
         end tell'''
         while time.time() < end:
             try:
+                if self.headless:
+                    self._auto_dismiss_dialogs()   # clear blockers before judging ready
                 if _osascript(script, timeout=10) == 'ready':
                     time.sleep(settle)
                     return self.is_alive()
@@ -265,19 +339,58 @@ class LogicRenderBridge:
             time.sleep(0.7)
         return False
 
+    # — focus-masked keystrokes (P3) —
+    def _wait_input_idle(self) -> bool:
+        """Block until the user has been idle for >= self._idle_min seconds, up to
+        self._idle_timeout. Returns True if an idle gap was found, False if we timed
+        out (caller proceeds best-effort either way so a render can't hang)."""
+        end = time.time() + self._idle_timeout
+        while time.time() < end:
+            if _input_idle_seconds() >= self._idle_min:
+                return True
+            time.sleep(0.15)
+        return False
+
+    def _run_masked_keys(self, body_script: str):
+        """Run an AppleScript `body_script` (the keystroke chords) with Logic
+        frontmost ONLY for that instant, restoring the user's prior frontmost app
+        afterwards. Gated on an input-idle gap. The cursor is never moved.
+
+        body_script is the inside of a `tell process "<proc>"` block (it may use
+        `w` = window "Open" — we bind it). Used only on the headless path."""
+        proc = self.process_name
+        self._wait_input_idle()                 # best-effort idle gap
+        prior = _frontmost_app_name()
+        try:
+            _set_app_frontmost(proc)
+            time.sleep(0.15)
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set w to window "Open"
+{body_script}
+            end tell''', timeout=30)
+        finally:
+            # Always hand focus back to the user's app, even if the body errored.
+            if prior and prior != proc:
+                _set_app_frontmost(prior)
+
     # — the export —
     def export_stems(self, output_folder: str, file_stem: str = 'stem',
                      bypass_fx: bool = False):
         """Drive ONE 'All Tracks as Audio Files' export into `output_folder`.
         WAVs land loose in output_folder; the orchestrator sorts them afterwards.
 
-        Element-level only (no screenshots / coordinate clicks):
-          1. Bring Logic frontmost, open File ▸ Export ▸ All Tracks as Audio Files…
-          2. ⌘⇧G → type output_folder → Return  (off-Finder path entry).
+        Element-level only (no screenshots / coordinate clicks; cursor never moves):
+          1. Open File ▸ Export ▸ All Tracks as Audio Files… — headless: menu-bar
+             element click against a BACKGROUNDED Logic (no frontmost); legacy:
+             frontmost flick first.
+          2. Destination: headless → focus-MASKED ⌘⇧G + AX set-value + Return (the
+             only frontmost moment, idle-gated, prior app restored); legacy →
+             frontmost ⌘⇧G + ⌘A + keystroke output_folder + Return.
           3. File Format → WAVE; Bypass Effect Plug-ins → bypass_fx (read AXValue,
-             click only if it differs); Normalize → Off. Bit depth + One-File-per-
-             Track left at defaults.
-          4. Click "Export".
+             click only if it differs); Normalize → Off; Range → Trim Silence. All
+             backgrounded element clicks on the headless path. Bit depth + One-File-
+             per-Track left at defaults.
+          4. Click "Export" (backgrounded element click on the headless path).
           5. Wait for completion (wait_for_export_complete).
         Raises LogicCrashedError if Logic dies at any point.
         """
@@ -290,13 +403,25 @@ class LogicRenderBridge:
         # Defensive: clear a modal "Key Command Assignment Conflicts" sheet that can
         # block the main window before we try to open the Export menu.
         self._dismiss_conflict_sheet()
+        # Headless: also clear any blocking free-floating AXDialog / sheet (e.g. the
+        # audio-interface alert) right before opening the Export menu (catalog
+        # requirement #1) — safe whitelisted buttons only, cursor never moves.
+        if self.headless:
+            self._auto_dismiss_dialogs()
 
-        # 1. Open the export dialog.
-        _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-            set frontmost to true
-            delay 0.4
-            click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-        end tell''', timeout=20)
+        # 1. Open the export dialog. Headless: the menu-bar element click works
+        # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`, no
+        # focus steal. Legacy: keep the frontmost flick.
+        if self.headless:
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
+            end tell''', timeout=20)
+        else:
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set frontmost to true
+                delay 0.4
+                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
+            end tell''', timeout=20)
 
         # Poll for the dialog window to appear.
         if not self._wait_for_open_dialog(timeout=30):
@@ -307,27 +432,16 @@ class LogicRenderBridge:
         # Defensive again: the conflict sheet can also surface as the dialog opens.
         self._dismiss_conflict_sheet()
 
-        # 2 + 3 + 4. Set destination, controls, and export — one scripted block.
+        # 2 + 3 + 4. Set destination, controls, and export.
         desired_bypass = 1 if bypass_fx else 0
-        script = f'''tell application "System Events" to tell process "{_as_str(proc)}"
-            set w to window "Open"
 
-            -- Make sure the accessory options (the pop-ups/checkboxes) are visible.
-            if exists button "Show Options" of w then
-                click button "Show Options" of w
-                delay 0.3
-            end if
-
-            -- Destination via ⌘⇧G "Go to Folder" (keeps us off Finder automation).
-            keystroke "g" using {{command down, shift down}}
-            delay 0.5
-            keystroke "a" using {{command down}}
-            delay 0.1
-            keystroke "{_as_str(output_folder)}"
-            delay 0.3
-            keystroke return
-            delay 0.8
-
+        # The accessory controls (Format/Bypass/Normalize/Range) and the Export
+        # button are ELEMENT actions that all work against a BACKGROUNDED Logic
+        # (P3). Pop-ups can NOT be set by AXValue (verified P3) — we click them open
+        # and select the menu item, which also works backgrounded. This control
+        # logic is identical for both modes, so it's built once and reused. The
+        # range root-cause note is preserved from Phase 1.
+        controls_body = f'''
             -- File Format → WAVE (find the pop-up whose value is a format option).
             repeat with p in (every pop up button of w)
                 set v to ""
@@ -394,9 +508,56 @@ class LogicRenderBridge:
             end repeat
 
             -- Go.
-            click button "Export" of w
-        end tell'''
-        _osascript(script, timeout=60)
+            click button "Export" of w'''
+
+        # The destination path field lives ONLY inside the ⌘⇧G "Go to Folder" sheet
+        # (window "Open" has no path field — just a search field + the "Where:"
+        # pop-up; P1/P2 probes, docs/2026-06-28/probe_save_panel.txt). The sheet has
+        # no accessible "Go" button (only Close), so Return is required to confirm.
+        if self.headless:
+            # HEADLESS: backgrounded element actions + a single focus-MASKED moment
+            # for the two irreducible chords (⌘⇧G, Return). No path typing; the
+            # destination is set by AX value. Cursor never moves.
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set w to window "Open"
+                if exists button "Show Options" of w then
+                    click button "Show Options" of w
+                    delay 0.3
+                end if
+            end tell''', timeout=20)
+            self._run_masked_keys(f'''
+                keystroke "g" using {{command down, shift down}}
+                delay 0.5
+                set value of text field 1 of sheet 1 of w to "{_as_str(output_folder)}"
+                delay 0.3
+                keystroke return
+                delay 0.8''')
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set w to window "Open"
+{controls_body}
+            end tell''', timeout=60)
+        else:
+            # LEGACY (not headless): one frontmost-held script that TYPES the
+            # destination path char-by-char (⌘⇧G + ⌘A + keystroke "<path>"). Kept as
+            # the pre-headless fallback.
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set w to window "Open"
+                if exists button "Show Options" of w then
+                    click button "Show Options" of w
+                    delay 0.3
+                end if
+
+                -- Destination via ⌘⇧G "Go to Folder" + keystroke typing.
+                keystroke "g" using {{command down, shift down}}
+                delay 0.5
+                keystroke "a" using {{command down}}
+                delay 0.1
+                keystroke "{_as_str(output_folder)}"
+                delay 0.3
+                keystroke return
+                delay 0.8
+{controls_body}
+            end tell''', timeout=60)
 
         # 4b. Defensive: a stray "Replace existing files?" sheet (shouldn't occur —
         # we sort between passes so the root is empty — but handle it).
@@ -421,6 +582,90 @@ class LogicRenderBridge:
                 pass
             time.sleep(0.4)
         return False
+
+    # — minimal safe dialog auto-dismiss (headless DialogGuard seed, P6) —
+    # Whitelist of SAFE dismiss buttons we may click. Anything else is left alone;
+    # in particular we NEVER click a destructive verb or "Open Settings" (those are
+    # never in this set, so they can't be clicked by construction). Buttons starting
+    # with "Use " (e.g. "Use MacBook Pro Speakers") are also safe (accept default).
+    _SAFE_DISMISS = ('OK', 'Continue', 'Close')
+    _NEVER_CLICK = ('Delete', 'Discard', 'Overwrite', 'Replace', 'Move to Trash',
+                    'Open Settings', 'Reopen', 'Save')  # documentation / guard
+
+    def _auto_dismiss_dialogs(self):
+        """Scan the Logic process for BLOCKING pop-ups — free-floating AXDialogs AND
+        sheets — read each one's buttons, and click a SAFE whitelisted button only
+        (`_SAFE_DISMISS` or a "Use …" button). NEVER clicks a destructive verb
+        (Delete/Discard/Overwrite/Replace/Move to Trash) or "Open Settings"; if a
+        dialog has no safe button it is left untouched (fail safe). Element clicks
+        only → works against a BACKGROUNDED Logic, cursor never moves. Logs every
+        dialog it clears. Best-effort, non-fatal. Headless only. Returns the list of
+        cleared dialogs (dicts with title/body/clicked) — also used by the catalog
+        learn-loop (docs/2026-06-28/logic_dialog_catalog.md)."""
+        proc = self.process_name
+        script = f'''tell application "System Events"
+            if not (exists process "{_as_str(proc)}") then return ""
+            tell process "{_as_str(proc)}"
+                set containers to {{}}
+                repeat with w in windows
+                    try
+                        if ((subrole of w) as text) is "AXDialog" then set end of containers to w
+                    end try
+                    try
+                        repeat with s in sheets of w
+                            set end of containers to s
+                        end repeat
+                    end try
+                end repeat
+                set report to ""
+                repeat with c in containers
+                    set theTitle to ""
+                    try
+                        set theTitle to (name of c) as text
+                    end try
+                    set oldD to AppleScript's text item delimiters
+                    set AppleScript's text item delimiters to " / "
+                    set theBody to ""
+                    try
+                        set theBody to (value of (every static text of c)) as text
+                    end try
+                    set AppleScript's text item delimiters to oldD
+                    set clicked to ""
+                    repeat with b in buttons of c
+                        set bn to ""
+                        try
+                            set bn to (name of b) as text
+                        end try
+                        if (bn is "OK" or bn is "Continue" or bn is "Close" or bn starts with "Use ") then
+                            click b
+                            set clicked to bn
+                            exit repeat
+                        end if
+                    end repeat
+                    if clicked is not "" then
+                        set report to report & "title=" & theTitle & "||body=" & theBody & "||clicked=" & clicked & linefeed
+                    end if
+                end repeat
+                return report
+            end tell
+        end tell'''
+        try:
+            out = _osascript(script, timeout=15)
+        except Exception:
+            return []
+        cleared = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            d = {}
+            for part in line.split('||'):
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    d[k] = v
+            cleared.append(d)
+            print(f'[DialogGuard] cleared: title={d.get("title", "")!r} '
+                  f'button={d.get("clicked", "")!r} body={d.get("body", "")!r}')
+        return cleared
 
     def _dismiss_conflict_sheet(self):
         """If Logic shows the modal "Key Command Assignment Conflicts" sheet
@@ -516,21 +761,37 @@ class LogicRenderBridge:
 
     def quit_logic(self, save: bool = False, force: bool = False):
         """Quit Logic WITHOUT saving (the export must never write the project).
-        ⌘Q → handle a 'Don't Save' sheet → poll for exit → escalate to terminate /
-        kill. `save` is accepted for signature parity but we never save."""
+        Trigger quit → handle a 'Don't Save' sheet by ELEMENT → poll for exit →
+        escalate to terminate / kill. `save` is accepted for signature parity but we
+        never save.
+
+        Headless (P4): an Apple-event quit (`tell application … to quit`) lets Logic
+        quit while it stays BACKGROUNDED — no focus flick — and the save prompt is
+        cleared by `_click_dont_save()` (an element click, works backgrounded).
+        Legacy: the old frontmost + ⌘Q, kept behind `if not self.headless:`."""
         if not self.is_alive():
             return
         proc = self.process_name
 
-        # Polite ⌘Q.
-        try:
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                set frontmost to true
-                delay 0.2
-                keystroke "q" using command down
-            end tell''', timeout=10)
-        except Exception:
-            pass
+        # Trigger the quit.
+        if self.headless:
+            # Apple-event quit — no `set frontmost`, no ⌘Q, no focus flick. If the
+            # osascript blocks on the save dialog it just times out (caught) and the
+            # _click_dont_save() sweep below clears the prompt.
+            try:
+                _osascript(f'tell application "{_as_str(proc)}" to quit', timeout=10)
+            except Exception:
+                pass
+        else:
+            # Legacy: polite frontmost ⌘Q.
+            try:
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                    set frontmost to true
+                    delay 0.2
+                    keystroke "q" using command down
+                end tell''', timeout=10)
+            except Exception:
+                pass
 
         # Poll for exit, clearing any 'Don't Save' sheet each tick.
         end = time.time() + 20

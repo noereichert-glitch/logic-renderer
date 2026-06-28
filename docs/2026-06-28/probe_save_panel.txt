@@ -1,0 +1,158 @@
+# P1 save-panel probe — 2026-06-28 17:33:56
+project (resolved): /Users/reichertnoe/Desktop/logic test.logicx
+process name      : Logic Pro X
+frontmost at start: Logic Pro X
+
+== LAUNCH-TIME ALERT(S) captured + dismissed ==
+ALERT name=
+  text: The last selected audio interface is not available.
+  text: The previously selected interface “MacBook Pro Speakers” will be used instead for this session.
+  buttons: Open SettingsOK
+  -> clicked: OK
+
+== DUMP: window "Open" (accessory options shown) ==
+### window "Open"
+text field:
+[1] name=missing value | value=missing value | subrole=AXSearchField | enabled=true
+combo box: (none / empty)
+pop up button:
+[1] name=Where: | value=Logic | subrole=missing value | enabled=true
+  [2] name=missing value | value=Trim Silence at File End | subrole=missing value | enabled=true
+  [3] name=missing value | value=WAVE | subrole=missing value | enabled=true
+  [4] name=missing value | value=One File per Track | subrole=missing value | enabled=false
+  [5] name=missing value | value=24-bit | subrole=missing value | enabled=true
+  [6] name=missing value | value=Overload Protection Only | subrole=missing value | enabled=true
+checkbox:
+[1] name=Bypass Effect Plug-ins | value=0 | subrole=missing value | enabled=true
+  [2] name=Include Audio Tail | value=0 | subrole=missing value | enabled=true
+  [3] name=Include Volume/Pan Automation | value=0 | subrole=missing value | enabled=true
+  [4] name=Add resulting files to Project Browser | value=0 | subrole=missing value | enabled=true
+  [5] name=Include Tempo Information | value=1 | subrole=missing value | enabled=true
+button:
+[1] name=New Folder | value=missing value | subrole=missing value | enabled=true
+  [2] name=Hide Options | value=missing value | subrole=missing value | enabled=true
+  [3] name=Cancel | value=missing value | subrole=missing value | enabled=true
+  [4] name=Export | value=missing value | subrole=missing value | enabled=true
+sheet: (none / empty)
+group:
+[1] name=missing value | value=missing value | subrole=missing value | enabled=true
+  [2] name=missing value | value=missing value | subrole=missing value | enabled=missing value
+scroll area: (none / empty)
+
+== ⌘⇧G Go-to-Folder sheet present: True ==
+### sheet 1 of window "Open"
+text field:
+[1] name=missing value | value=/tmp/stemexport_full/logic test | subrole=missing value | enabled=true
+combo box: (none / empty)
+pop up button: (none / empty)
+checkbox: (none / empty)
+button:
+[1] name=missing value | value=missing value | subrole=missing value | enabled=true
+sheet: (none / empty)
+group: (none / empty)
+scroll area:
+[1] name=missing value | value=missing value | subrole=missing value | enabled=missing value
+
+== SET-VALUE-WHILE-BACKGROUNDED TESTS ==
+- target   : combo box 1 of sheet 1 of window "Open"
+  set TEST_DIR=/Users/reichertnoe/Desktop
+  result    : SET_ERR:System Events got an error: Can’t get combo box 1 of sheet 1 of window "Open" of process "Logic Pro X". Invalid index.
+  front before/after: Finder -> Finder
+  focus kept off Logic: True
+- target   : text field 1 of sheet 1 of window "Open"
+  set TEST_DIR=/Users/reichertnoe/Desktop
+  result    : OK:/Users/reichertnoe/Desktop
+  front before/after: Finder -> Finder
+  focus kept off Logic: True
+- target   : combo box 1 of window "Open"
+  set TEST_DIR=/Users/reichertnoe/Desktop
+  result    : SET_ERR:System Events got an error: Can’t get combo box 1 of window "Open" of process "Logic Pro X". Invalid index.
+  front before/after: Finder -> Finder
+  focus kept off Logic: True
+- target   : text field 1 of window "Open"
+  set TEST_DIR=/Users/reichertnoe/Desktop
+  result    : OK:/Users/reichertnoe/Desktop
+  front before/after: Finder -> Finder
+  focus kept off Logic: True
+
+== NEVER-SAVED CHECK ==
+package newest-mtime before: 1780766645.766238
+package newest-mtime after : 1780766645.766238
+unchanged (never saved)    : True
+
+================================================================================
+== FINDINGS / VERDICT (P1) ==
+================================================================================
+
+DECISION QUESTION: Can the export "Open" save-panel destination path be set via
+AX *value* with Logic NOT frontmost (no focus steal, no cursor move)?
+
+ANSWER: YES — Tier-0 "route 1" is VIABLE.
+
+Evidence:
+  * The path element is the ⌘⇧G "Go to Folder" sheet's text field:
+        text field 1 of sheet 1 of window "Open"
+    (It is a TEXT FIELD, not a combo box — the combo-box targets erred
+    "Invalid index". There is NO destination text field on the window itself;
+    window "Open" text field 1 is the AXSearchField, not the destination.)
+  * `set value of text field 1 of sheet 1 of window "Open" to "<path>"` SUCCEEDED
+    and read back exactly, while **Finder was frontmost** (front before/after =
+    Finder -> Finder, focus_kept_off_logic = True). So the value set does NOT
+    require Logic to be frontmost and does NOT steal focus or move the cursor.
+
+Residual focus need (for P2/P3 to address):
+  * Opening the ⌘⇧G sheet itself is still a keystroke (`keystroke "g" using
+    {command down, shift down}`) which goes to the frontmost app → needs Logic
+    frontmost for that ONE fixed chord. BUT the slow/fragile part — ⌘A + typing
+    the path char-by-char + Return — is replaced by a single atomic `set value`
+    (no keystrokes). After set-value we click the sheet's "Go" button (an element
+    click, works backgrounded).
+  * Whether the Export *menu* click and the ⌘⇧G chord can themselves run without
+    `set frontmost` is the P3 question (handoff §4 #1 claims the menu-bar element
+    click works backgrounded). Not tested here — P1 only owns the path field.
+
+Proposed Tier-0 export-path shape (to implement in P2/P3, behind `headless`):
+  1. (P3) open Export menu — try without `set frontmost`.
+  2. open ⌘⇧G sheet (single fixed chord; mask via idle-gap if needed, §5.7).
+  3. set value of text field 1 of sheet 1 of window "Open" to output_folder.
+  4. click the sheet's Go button (element click).
+  5. set Format/Normalize/Range/Bypass by value+element click (already backgrounded-safe).
+  6. click button "Export" of window "Open" (element click).
+  Keep the old ⌘⇧G + ⌘A + keystroke-path branch behind `if not self.headless:`.
+
+BONUS for the DialogGuard catalog (P6/P7):
+  * Launch-time alert observed + safely auto-dismissed:
+        title: (none)
+        body : "The last selected audio interface is not available."
+               "The previously selected interface “MacBook Pro Speakers” will be
+                used instead for this session."
+        buttons: ["Open Settings", "OK"]   -> safe action: click "OK"
+    This floats as a free AXDialog (NOT a sheet of the project window), so the
+    existing readiness check passes while it still blocks the Export menu. The
+    DialogGuard must clear free AXDialogs, not just sheets. Rule: audio-interface
+    alert -> "OK" (never "Open Settings").
+
+NEVER-SAVED: package newest-mtime identical before/after; Logic quit, pgrep empty;
+.logicx ProjectData mtime still Jun 6 (untouched). Cursor never moved (no
+coordinate/cliclick calls anywhere in the probe).
+
+================================================================================
+== P2 ADDENDUM (2026-06-28) — confirm mechanism corrected ==
+================================================================================
+
+While implementing P2 the Go-to-Folder sheet's buttons were re-probed:
+  * sheet 1 of window "Open" exposes exactly ONE button, name=missing value,
+    description="Close" (the dismiss/X) — there is NO accessible "Go" button.
+  * Clicking that button does NOT navigate (sheetGone=false, where=Logic).
+  * Verified working sequence: set value of text field 1 of sheet 1 of w ->
+    keystroke return  =>  sheetGone=true, where=<target folder>. Navigation OK.
+
+So the P1 verdict's "click the sheet's Go button" is NOT possible. The headless
+destination path therefore uses TWO fixed keystroke chords (⌘⇧G to summon the
+field, Return to confirm) plus the AX set-value. The variable-length path TYPING
+(⌘A + keystroke "<path>") is eliminated — that was P2's goal. Removing the
+remaining `set frontmost` / handling the two chords is P3 / Tier-1 masking.
+
+P2 end-to-end verification (headless=True): wet export of `logic test.logicx`
+produced 4 WAVs in <dest>/01_With_FX, Logic quit clean, .logicx mtime unchanged
+(Jun 6 — never saved).

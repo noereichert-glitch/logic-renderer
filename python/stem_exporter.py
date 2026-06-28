@@ -59,10 +59,14 @@ MAX_PASS_ATTEMPTS = 3
 
 
 class StemExporter:
-    def __init__(self, file_path, output_folder, state):
+    def __init__(self, file_path, output_folder, state, headless=True):
         self.file_path = file_path
         self.output_folder = output_folder
         self.state = state
+        # headless (default on): run the whole export invisibly/backgrounded — no
+        # focus steal, cursor never moves (Tier 0, docs/2026-06-28/). Pass
+        # headless=False to fall back to the legacy frontmost+keystroke path.
+        self.headless = headless
 
     # ── state helpers ────────────────────────────────────────────────────────
     def _set_status(self, title, sub='', progress=None):
@@ -82,7 +86,7 @@ class StemExporter:
         os.makedirs(project_folder, exist_ok=True)
 
         self._set_status('Launching Logic Pro…', 'Opening project', progress=5)
-        bridge = LogicRenderBridge()
+        bridge = LogicRenderBridge(headless=self.headless)
         bridge.launch(self.file_path)
 
         # ONE Logic session for BOTH passes. try/finally guarantees a clean quit.

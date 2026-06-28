@@ -80,6 +80,10 @@ def export():
     data = request.json or {}
     file_path = data.get('file_path')
     output_folder = data.get('output_folder')
+    # headless (default True): run the export invisibly/backgrounded. The UI sends
+    # only file_path + output_folder, so this stays the default; pass
+    # "headless": false in the payload to force the legacy frontmost path.
+    headless = bool(data.get('headless', True))
 
     if not file_path or not os.path.exists(file_path):
         return jsonify({'error': 'file_path missing or not found'}), 400
@@ -101,6 +105,7 @@ def export():
                 file_path=file_path,
                 output_folder=output_folder,
                 state=export_state,
+                headless=headless,
             )
             result = exporter.run()
             export_state['sets'] = result.get('sets', {})
