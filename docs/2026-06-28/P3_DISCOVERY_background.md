@@ -47,12 +47,31 @@ moment (`LogicRenderBridge._run_masked_keys`):
 keystrokes and app-activation don't move the pointer.
 
 ### End-to-end verification (headless, Logic backgrounded)
-Sampling the frontmost app every 0.2s across a full 16.6s export:
-`Finder: 38, Logic Pro X: 6` → Logic was frontmost only **~1.2s** (the masked
-moment); focus **restored to Finder** afterward; **4 WAVs** in the dest; Logic
-quit clean; `.logicx` mtime unchanged (Jun 6 — **never saved**).
+An early check sampled the frontmost app every 0.2s across a full 16.6s export
+(`Finder: 38, Logic Pro X: 6`) and reported "~1.2s frontmost" — but **0.2s
+sampling undercounts the flick** and that figure was wrong. **Re-measured
+2026-06-28** with a 50ms sampler plus in-process stamps
+(`LogicRenderBridge._run_masked_keys`, inert `_instrument_flick` flag), the true
+masked destination flick was **~2.0s observed / ~2.09s in-process** — dominated by
+the chord body's hardcoded `delay 0.5 + 0.3 + 0.8 = 1.6s` (the actual System-Events
+work is only ~0.14s; activation+restore ~0.2s). Focus restored to the user's app
+afterward; **4 WAVs**; Logic quit clean; `Alternatives/000/ProjectData` mtime
+unchanged (Jun 6 — **never saved**).
 
-**Residual:** that ~1.2s is Logic visibly coming forward for the chords — the
+**Flick compression (2026-06-28):** the two sheet-wait sleeps in the chord body
+(`delay 0.5` after ⌘⇧G, `delay 0.8` after Return) were converted to bounded ~50ms
+polls — proceed the instant the Go-to-Folder sheet appears / vanishes, cap ~3s, and
+on timeout fall back to the original fixed delay (never worse than before, logs
+when it fires). This cut the flick to **~1.4–1.5s observed / ~1.58s in-process**
+(~0.5s, ~24% faster) and hands focus back as soon as the sheet is actually gone.
+Audio is **byte-identical** (PCM `data` chunk unchanged across pre/post; only
+Logic's per-export `ResU`/`bext` metadata — UUIDs + Broadcast-Wave timestamp —
+ever differs, which also differs between any two stock exports). Polls never timed
+out in practice (no fallback across 6 masked steps). `time.sleep(0.15)` and the
+`delay 0.3` after set-value were left as-is; the legacy (`not headless`) path is
+untouched.
+
+**Residual:** that ~1.5s is Logic visibly coming forward for the chords — the
 documented Tier-0 residual (a brief menu-bar/window flick). Eliminating even that
 is Tier 1 (virtual display), not needed unless "never any flicker" is required.
 
@@ -91,4 +110,11 @@ back to the masked ⌘⇧G path. Not implemented yet.
 - `export_stems`: headless → backgrounded menu click; Show Options (bg); masked
   destination; shared `controls_body` (Format/Bypass/Normalize/Range/Export) run
   backgrounded. Legacy → unchanged frontmost-held single script with path typing.
-- `quit_logic` still uses frontmost + ⌘Q — that's **P4**, deliberately untouched here.
+- `quit_logic` (headless, P4 — implemented 2026-06-29): non-blocking Apple-event
+  quit (`subprocess.Popen`, fire-and-forget) + a ~50ms poll that clicks **only**
+  "Don't Save" via `_click_dont_save()` (safe whitelist; unknown dialogs left
+  untouched) the instant it appears, restores the user's app the moment that click
+  lands, then keeps polling process-gone (10s hard cap) with the SIGTERM/SIGKILL
+  backstop. **~13s → ~3s** quit; frontmost-during-quit leak **~2.5s → ~0.12s**;
+  `ProjectData` mtime unchanged (never saved). Legacy `quit_logic` (frontmost + ⌘Q
+  + 0.5s sweep) is unchanged behind `if not self.headless:`.

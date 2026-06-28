@@ -39,8 +39,19 @@ impossible on macOS and not the goal.
 - `set frontmost` dropped for all element actions (menu/format/bypass/normalize/
   Export button work backgrounded).
 - Two irreducible chords (⌘⇧G, Return) masked via `_run_masked_keys()`: idle-gate
-  → snapshot frontmost → flick → restore. ~1s, cursor never moves.
-- Quit: Apple-event quit, fully backgrounded, 0 focus steal, never saves.
+  → snapshot frontmost → flick → restore. Cursor never moves. Measured flick
+  (2026-06-28, 50ms sampler): baseline **~2.0s** observed / ~2.09s in-process (the
+  old "~1.2s" came from coarse 0.2s sampling and was wrong). After compressing the
+  two sheet-wait sleeps to bounded polls: **~1.4–1.5s** observed / ~1.58s in-process
+  (~24% faster), audio byte-identical. See `P3_DISCOVERY_background.md`.
+- Quit (headless): non-blocking Apple-event quit + instant "Don't Save" dismissal
+  (element click, backgrounded, cursor never moves) + focus restore. Measured
+  2026-06-29: **~13s → ~3s** (the old path blocked the full 10s on the quit
+  osascript because the save prompt was only answered after it timed out). The quit
+  modal transiently pulls Logic frontmost; restoring focus the instant the Don't-Save
+  click lands cut that frontmost-during-quit leak from **~2.5s → ~0.12s**. Never
+  saves (`Alternatives/000/ProjectData` mtime unchanged); focus ends on the user's
+  app. Legacy (`not headless`) ⌘Q path unchanged.
 - `headless` flag wired server.py → stem_exporter.py → LogicRenderBridge (default on).
 - Minimal safe auto-dismiss (`_auto_dismiss_dialogs`): clears free AXDialogs + sheets,
   whitelisted safe buttons only, never destructive; readiness check fixed; verified

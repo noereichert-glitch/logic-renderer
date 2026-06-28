@@ -266,6 +266,17 @@ class LogicRenderBridge:
         # for such a gap (then proceed best-effort so a render never hangs forever).
         self._idle_min = 0.7
         self._idle_timeout = 60.0
+        # Measurement-only flick instrumentation (inert by default — changes NO
+        # delays or behavior). When _instrument_flick is True, _run_masked_keys
+        # prints its activation/body/restore deltas; _last_flick_timings always
+        # holds the most recent masked-step timing dict (cheap time.time() stamps).
+        self._instrument_flick = False
+        self._last_flick_timings = None
+        # Measurement-only: per-phase wall-clock durations for a whole headless
+        # export (inert unless _instrument_flick). list of (label, seconds).
+        self._phases = []
+        self._bounce_start = None   # set just after the Export click, for bounce timing
+        self._quit_focus_pulled = None   # measurement-only: did quit pull Logic frontmost?
 
     # — lifecycle —
     def launch(self, project_path: str):
@@ -361,17 +372,119 @@ class LogicRenderBridge:
         proc = self.process_name
         self._wait_input_idle()                 # best-effort idle gap
         prior = _frontmost_app_name()
+        # Cheap wall-clock stamps for measurement only (no behavior change). All
+        # initialised to t0 so the finally block is safe even if the body raises.
+        t0 = time.time()
+        t1 = t2 = t3 = t0
         try:
             _set_app_frontmost(proc)
+            t1 = time.time()                    # after activation
             time.sleep(0.15)
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            t2 = time.time()                    # after the fixed post-activation sleep
+            flick_msg = _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
 {body_script}
             end tell''', timeout=30)
+            t3 = time.time()                    # after the chord body
+            # A poll fallback fired (sheet didn't appear/vanish in ~3s) — always
+            # log it so we can see if polls ever time out in practice.
+            if flick_msg:
+                print(f'[masked-keys] {flick_msg}')
         finally:
             # Always hand focus back to the user's app, even if the body errored.
+            t4 = time.time()                    # before restore
             if prior and prior != proc:
                 _set_app_frontmost(prior)
+            t5 = time.time()                    # after restore
+            self._last_flick_timings = {
+                'activation': t1 - t0,
+                'post_activation_sleep': t2 - t1,
+                'body': t3 - t2,
+                'pre_restore_gap': t4 - t3,
+                'restore': t5 - t4,
+                'total_t0_t5': t5 - t0,
+                'abs': {'t0': t0, 't1': t1, 't2': t2,
+                        't3': t3, 't4': t4, 't5': t5},
+            }
+            if self._instrument_flick:
+                print(f'[flick] activation={t1 - t0:.3f}s '
+                      f'sleep={t2 - t1:.3f}s body={t3 - t2:.3f}s '
+                      f'pre_restore={t4 - t3:.3f}s restore={t5 - t4:.3f}s '
+                      f'total={t5 - t0:.3f}s')
+
+    # — measurement-only phase recorder (inert unless _instrument_flick) —
+    def _rec_phase(self, label: str, dt: float):
+        """Record a phase duration. Cheap; only stores/prints when instrumenting,
+        so production behavior and output are unchanged."""
+        if self._instrument_flick:
+            self._phases.append((label, dt))
+            print(f'[phase] {label}: {dt * 1000:.0f} ms')
+
+    def _control_segments_for(self, desired_bypass: int):
+        """MEASUREMENT-ONLY decomposition of `controls_body` into individually
+        timeable AppleScript segments (Format / Bypass / Normalize / Range / Export
+        click). Each segment is self-contained (no cross-segment variables), so
+        running them as separate osascripts is functionally identical to the single
+        production block — the ONLY difference is one extra osascript spawn per
+        segment (~30-40 ms), which is why these per-pop-up numbers are upper bounds
+        vs the single-block production path. Used solely when _instrument_flick is
+        set; the production path still runs the original single `controls_body`."""
+        fmt = '''
+            repeat with p in (every pop up button of w)
+                set v to ""
+                try
+                    set v to (value of p) as text
+                end try
+                if v is in {"AIFF", "WAVE", "CAF"} then
+                    if v is not "WAVE" then
+                        click p
+                        delay 0.3
+                        click menu item "WAVE" of menu 1 of p
+                        delay 0.2
+                    end if
+                    exit repeat
+                end if
+            end repeat'''
+        byp = f'''
+            set cb to checkbox "Bypass Effect Plug-ins" of w
+            if (value of cb as integer) is not {desired_bypass} then
+                click cb
+                delay 0.2
+            end if'''
+        nrm = '''
+            repeat with p in (every pop up button of w)
+                set v to ""
+                try
+                    set v to (value of p) as text
+                end try
+                if v is in {"Off", "Overload Protection Only", "On"} then
+                    if v is not "Off" then
+                        click p
+                        delay 0.3
+                        click menu item "Off" of menu 1 of p
+                        delay 0.2
+                    end if
+                    exit repeat
+                end if
+            end repeat'''
+        rng = f'''
+            repeat with p in (every pop up button of w)
+                set v to ""
+                try
+                    set v to (value of p) as text
+                end try
+                if v is in {{"Trim Silence at File End", "Export Cycle Range Only", "Extend File Length to Project End"}} then
+                    if v is not "{_as_str(DEFAULT_RANGE_MODE)}" then
+                        click p
+                        delay 0.3
+                        click menu item "{_as_str(DEFAULT_RANGE_MODE)}" of menu 1 of p
+                        delay 0.2
+                    end if
+                    exit repeat
+                end if
+            end repeat'''
+        return [('format', fmt), ('bypass', byp), ('normalize', nrm),
+                ('range', rng), ('export_click', 'click button "Export" of w')]
 
     # — the export —
     def export_stems(self, output_folder: str, file_stem: str = 'stem',
@@ -412,6 +525,7 @@ class LogicRenderBridge:
         # 1. Open the export dialog. Headless: the menu-bar element click works
         # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`, no
         # focus steal. Legacy: keep the frontmost flick.
+        _t_menu = time.time()
         if self.headless:
             _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
@@ -428,6 +542,7 @@ class LogicRenderBridge:
             if not self.is_alive():
                 raise LogicCrashedError('Logic died while opening the export dialog.')
             raise RuntimeError('Export dialog did not open.')
+        self._rec_phase('menu_click_to_dialog', time.time() - _t_menu)
 
         # Defensive again: the conflict sheet can also surface as the dialog opens.
         self._dismiss_conflict_sheet()
@@ -518,6 +633,7 @@ class LogicRenderBridge:
             # HEADLESS: backgrounded element actions + a single focus-MASKED moment
             # for the two irreducible chords (⌘⇧G, Return). No path typing; the
             # destination is set by AX value. Cursor never moves.
+            _t_so = time.time()
             _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
                 if exists button "Show Options" of w then
@@ -525,14 +641,66 @@ class LogicRenderBridge:
                     delay 0.3
                 end if
             end tell''', timeout=20)
+            self._rec_phase('show_options', time.time() - _t_so)
+            # Two sheet-waits are POLLED (proceed the instant the sheet
+            # appears/vanishes) instead of fixed sleeps — this shrinks the masked
+            # flick and returns focus to the user as soon as the Go-to sheet is
+            # actually gone. Each poll caps at ~3s (60 × 50ms) and, on timeout,
+            # falls back to the ORIGINAL fixed delay so it is never worse than
+            # before. The other delays (the 0.15 post-activation sleep in
+            # _run_masked_keys and the 0.3 after set-value) are unchanged. The body
+            # returns a marker string when a fallback fires so _run_masked_keys can
+            # log it.
             self._run_masked_keys(f'''
                 keystroke "g" using {{command down, shift down}}
-                delay 0.5
+                -- Poll for the Go-to-Folder sheet to APPEAR (was: delay 0.5).
+                set fb1 to true
+                repeat 60 times
+                    try
+                        if (exists text field 1 of sheet 1 of w) then
+                            set fb1 to false
+                            exit repeat
+                        end if
+                    end try
+                    delay 0.05
+                end repeat
+                if fb1 then delay 0.5
                 set value of text field 1 of sheet 1 of w to "{_as_str(output_folder)}"
                 delay 0.3
                 keystroke return
-                delay 0.8''')
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                -- Poll for the Go-to-Folder sheet to DISMISS (was: delay 0.8).
+                set fb2 to true
+                repeat 60 times
+                    try
+                        if not (exists sheet 1 of w) then
+                            set fb2 to false
+                            exit repeat
+                        end if
+                    end try
+                    delay 0.05
+                end repeat
+                if fb2 then delay 0.8
+                set flickMsg to ""
+                if fb1 then set flickMsg to flickMsg & "FALLBACK sheet-appear poll timed out (~3s) -> used delay 0.5; "
+                if fb2 then set flickMsg to flickMsg & "FALLBACK sheet-gone poll timed out (~3s) -> used delay 0.8; "
+                return flickMsg''')
+            if self._last_flick_timings:
+                self._rec_phase('masked_flick_total',
+                                self._last_flick_timings['total_t0_t5'])
+            # Controls + Export click. PRODUCTION runs the original single
+            # `controls_body` osascript (unchanged). MEASUREMENT (_instrument_flick)
+            # runs each control as its own timed osascript for per-pop-up numbers —
+            # functionally identical, costs one extra osascript spawn per segment.
+            if self._instrument_flick:
+                for _label, _snip in self._control_segments_for(desired_bypass):
+                    _t_c = time.time()
+                    _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set w to window "Open"
+{_snip}
+            end tell''', timeout=60)
+                    self._rec_phase(f'controls:{_label}', time.time() - _t_c)
+            else:
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
 {controls_body}
             end tell''', timeout=60)
@@ -558,6 +726,9 @@ class LogicRenderBridge:
                 delay 0.8
 {controls_body}
             end tell''', timeout=60)
+
+        # Bounce starts the instant Export was clicked (last action above).
+        self._bounce_start = time.time()
 
         # 4b. Defensive: a stray "Replace existing files?" sheet (shouldn't occur —
         # we sort between passes so the root is empty — but handle it).
@@ -732,6 +903,12 @@ class LogicRenderBridge:
         last = None
         stable = 0
         saw_files = False
+        # Measurement-only (inert unless _instrument_flick): split Logic's real
+        # render work from our stability-detection tail.
+        _t_entry = time.time()
+        _base = self._bounce_start or _t_entry
+        _first_wav_at = None
+        _last_change_at = None
         while time.time() < end:
             if not self.is_alive():
                 raise LogicCrashedError('Logic exited during export.')
@@ -748,9 +925,21 @@ class LogicRenderBridge:
                 pass
             if snap:
                 saw_files = True
+                if _first_wav_at is None:
+                    _first_wav_at = time.time()
+                if snap != last:
+                    _last_change_at = time.time()   # last time any WAV size changed
             if saw_files and snap == last and snap and all(v > 0 for v in snap.values()):
                 stable += 1
                 if stable >= required_stable:
+                    if _first_wav_at:
+                        self._rec_phase('bounce:export_to_first_wav',
+                                        _first_wav_at - _base)
+                    if _last_change_at:
+                        self._rec_phase('bounce:export_to_last_write',
+                                        _last_change_at - _base)
+                    self._rec_phase('bounce:export_to_stable_return',
+                                    time.time() - _base)
                     return
             else:
                 stable = 0
@@ -772,18 +961,61 @@ class LogicRenderBridge:
         if not self.is_alive():
             return
         proc = self.process_name
+        _t_quit = time.time()   # measurement-only
 
         # Trigger the quit.
         if self.headless:
-            # Apple-event quit — no `set frontmost`, no ⌘Q, no focus flick. If the
-            # osascript blocks on the save dialog it just times out (caught) and the
-            # _click_dont_save() sweep below clears the prompt.
+            # P4 quit fix: fire the Apple-event quit WITHOUT blocking, then dismiss
+            # the "Don't Save" prompt the instant it appears and restore the user's
+            # app. The old path blocked ~10s on the quit osascript because Logic
+            # withholds the quit reply until the save prompt is answered — and we
+            # only answered it AFTER that osascript timed out. ~10s pure waste/render.
+            prior = _frontmost_app_name()
+            # Fire-and-forget — must NOT wait on this (it blocks until the prompt is
+            # answered); we answer it concurrently in the poll below.
+            quitter = subprocess.Popen(
+                ['osascript', '-e', f'tell application "{_as_str(proc)}" to quit'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            focus_pulled = False
+            clicked_any = False
+            end = time.time() + 10   # hard safety cap — never slower than before
+            while time.time() < end and self.is_alive():
+                # Click ONLY "Don't Save" (reuses _click_dont_save()'s whitelist —
+                # element click, backgrounded, cursor never moves; never Save/Cancel).
+                # An unknown/unexpected dialog matches nothing → left untouched.
+                clicked = self._click_dont_save()
+                if clicked:
+                    # The click landed → Logic has released the modal and is now
+                    # tearing down, so we no longer need it frontmost. Restore focus
+                    # to the user's app IMMEDIATELY (not after process-gone) to shrink
+                    # the ~2.5s frontmost-during-quit leak to near zero. Re-fires if a
+                    # later teardown prompt pulls Logic forward again.
+                    clicked_any = True
+                    focus_pulled = True
+                    if prior and prior != proc:
+                        _set_app_frontmost(prior)
+                elif not focus_pulled and _frontmost_app_name() == proc:
+                    focus_pulled = True
+                time.sleep(0.05)
             try:
-                _osascript(f'tell application "{_as_str(proc)}" to quit', timeout=10)
+                quitter.terminate()   # reap the fire-and-forget helper (Logic gone/capped)
             except Exception:
                 pass
+            if self.is_alive():
+                # Don't Save not resolved within the cap (an unexpected/unknown
+                # dialog or a hang) — do NOT guess: leave the dialog and let the
+                # SIGTERM/SIGKILL fallback below guarantee no orphan (kill never saves).
+                print('[quit] Logic still alive after 10s Don\'t-Save poll — leaving '
+                      'any unexpected dialog untouched, escalating to terminate.')
+            # Fallback restore: focus was pulled by a dialog-less frontmost flick
+            # (no Don't-Save click ever landed to trigger the immediate restore above).
+            if focus_pulled and not clicked_any and prior and prior != proc:
+                _set_app_frontmost(prior)
+            self._quit_focus_pulled = focus_pulled       # measurement-only
+            self._rec_phase('quit:trigger_to_process_gone', time.time() - _t_quit)
         else:
-            # Legacy: polite frontmost ⌘Q.
+            # LEGACY (not headless) — UNCHANGED: polite frontmost ⌘Q, then the
+            # original 0.5s Don't-Save sweep (cap 20s).
             try:
                 _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                     set frontmost to true
@@ -792,12 +1024,10 @@ class LogicRenderBridge:
                 end tell''', timeout=10)
             except Exception:
                 pass
-
-        # Poll for exit, clearing any 'Don't Save' sheet each tick.
-        end = time.time() + 20
-        while time.time() < end and self.is_alive():
-            self._click_dont_save()
-            time.sleep(0.5)
+            end = time.time() + 20
+            while time.time() < end and self.is_alive():
+                self._click_dont_save()
+                time.sleep(0.5)
 
         # Escalate: ask the app to quit, then SIGTERM, then SIGKILL.
         if self.is_alive():
@@ -815,32 +1045,39 @@ class LogicRenderBridge:
         if self.is_alive():
             subprocess.run(['pkill', '-9', '-x', proc], capture_output=True)
 
-    def _click_dont_save(self):
+    def _click_dont_save(self) -> bool:
         """Click 'Don't Save' on any save-prompt sheet/dialog so a ⌘Q can finish
         without writing the project. Handles straight + curly apostrophe and the
-        'Delete' wording some Logic prompts use."""
+        'Delete' wording some Logic prompts use.
+
+        Returns True if it actually clicked a whitelisted button this call, else
+        False (no matching prompt present, or error). The clicking behavior is
+        unchanged — only a signal is surfaced (callers that ignore it, e.g. the
+        legacy quit sweep, are unaffected)."""
         try:
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+            out = _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
                 set targets to {{"Don't Save", "Don’t Save", "Delete"}}
                 repeat with w in windows
                     repeat with s in sheets of w
                         repeat with b in buttons of s
                             if name of b is in targets then
                                 click b
-                                return
+                                return "clicked"
                             end if
                         end repeat
                     end repeat
                     repeat with b in buttons of w
                         if name of b is in targets then
                             click b
-                            return
+                            return "clicked"
                         end if
                     end repeat
                 end repeat
+                return ""
             end tell''', timeout=10)
+            return out == 'clicked'
         except Exception:
-            pass
+            return False
 
     # — context manager —
     def __enter__(self):
