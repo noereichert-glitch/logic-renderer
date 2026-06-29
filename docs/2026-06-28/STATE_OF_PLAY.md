@@ -72,6 +72,18 @@ menu-driven export** (hidden app has no usable menu bar). So:
    read "Where:" value, fallback to masked path on mismatch). Cuts raw-pass chords to 0.
 2. **Full DialogGuard (P6/P7)** — generalize the minimal auto-dismiss into the
    catalog-driven guard + learn-loop; finish the catalog.
+   - *Step 1 (string-dump) + 1b (language-agnostic rule table) DONE* — see
+     `logic_dialog_catalog.md`.
+   - *Step 6a (decision engine) DONE* — `python/dialog_guard.py` (pure logic),
+     `python/dialog_rules.yaml` (key-anchored, 7-locale), `tests/test_dialog_guard.py`
+     (28 tests, all green). NOT yet wired into export_stems/quit_logic and no live AX
+     detector yet — that is the next DialogGuard step (6b: AX detector + wire-in).
+   - **OPEN — product decision pending (C2 / overwrite-on-pass-1):** how to guarantee
+     a clean export destination. **Option A** — empty the per-job root at job start
+     (only our own artifacts, else pause) → lets `Replace` be dropped entirely (the
+     stronger §6-aligned state). **Option B (current)** — keep the gated `Replace`
+     (G1 dest = our per-job root ∧ G2 collider = our own `.wav` ∧ G3 pass 1). **Using
+     B for now; revisit.**
 3. **Full verification (P8)** — one clean hands-off end-to-end run; wire
    `tools/tester.py` smoke test + `STATUS.md` (match FL/Ableton).
 4. **Branch + commit** — rename `headles-work` → `logic-renderer-vN` before any

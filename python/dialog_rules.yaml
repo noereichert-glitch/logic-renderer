@@ -1,0 +1,536 @@
+meta:
+  logic_version: 11.0.1
+  build: 6029
+  locales:
+  - en
+  - de
+  - es
+  - fr
+  - ja
+  - ko
+  - zh_CN
+  source: Logic Pro X.app .lproj/Localizable.strings
+  note: Generated from the bundle; anchors are localized values, remaining ^P/^C/%@/%ld tokens are wildcards at match time.
+never_click_keys:
+- Save
+- Overwrite
+- Open Settings
+- Recover
+- Locate
+never_click_literals:
+- Reopen
+- Don’t Reopen
+- Move to Trash
+- Discard
+rules:
+- id: audio_interface_unavailable
+  action: dismiss_safe
+  click_keys:
+  - OK
+  - Use
+  body_keys:
+  - 'The last selected audio interface is not available.
+
+    The previously selected interface “%@” will be used instead for this session.'
+  - 'The previously selected audio interface is not available.
+
+    The built-in audio inputs and outputs of the ^C will be used instead for this session.'
+- id: save_changes_on_quit
+  action: dismiss_safe
+  click_keys:
+  - Don’t Save
+  - Delete
+  body_keys:
+  - Do you want to save the changes you made to “%@”?
+  - Do you want to save the changes made to the Alternative “%@”?
+  - Do you want to save the document “%@”?
+  - Your changes will be lost if you don’t save them.
+- id: export_overwrite
+  action: dismiss_gated
+  gate: G1_dest_is_per_job_root AND G2_collider_is_our_wav AND G3_pass_1
+  click_keys:
+  - Replace
+  body_keys:
+  - An item named “%@” already exists in this location. Do you want to replace it with the one you are exporting?
+  - A file or folder with the same name already exists in %@. Replacing it will overwrite its current contents.
+- id: export_failed
+  action: fail_job
+  click_keys:
+  - OK
+  body_keys:
+  - The export operation failed.
+- id: newer_version_blocking
+  action: fail_job
+  click_keys:
+  - OK
+  body_keys:
+  - 'This project can’t be loaded because it was created by a newer ^P version.
+
+    Please update ^P!'
+- id: newer_version_warning
+  action: pause_notify
+  body_keys:
+  - 'Warning! This project was created by a newer ^P version.
+
+    This may cause problems.
+
+    Please update ^P.'
+- id: sample_rate_change
+  action: pause_notify
+  note: 'if ever auto: click Don’t Change ONLY'
+  body_keys:
+  - 'Change Project Sample Rate to %@?
+
+    One or more added audio files have a sample rate different than the project sample rate. Do you want to change the project sample rate to match the highest file sample rate?'
+- id: missing_audio_files
+  action: pause_notify
+  body_keys:
+  - 'Missing file in Sampler Instrument
+
+    The Sampler Instrument “%@” is missing the audio file “%@”.
+
+    '
+  - Missing Audio Files in Plug-ins
+- id: missing_plugin
+  action: pause_notify
+  body_keys:
+  - Plug-in “%@” for device “%@” could not be loaded.
+  - Plug-in for device “%@” is missing.
+  - 'Audio Units plug-in missing on frozen track
+
+    Track %@ is frozen and uses an Audio Units plug-in which is not installed on this system. Do you want to unfreeze the track? This action cannot be undone.'
+- id: crash_recovery_revert
+  action: pause_notify
+  body_keys:
+  - The data for the chosen alternative is corrupt. The backup from %@ has been used instead.
+localizations:
+  OK:
+    en: OK
+    de: OK
+    es: Aceptar
+    fr: OK
+    ja: OK
+    ko: 확인
+    zh_CN: 好
+  Cancel:
+    en: Cancel
+    de: Abbrechen
+    es: Cancelar
+    fr: Annuler
+    ja: キャンセル
+    ko: 취소
+    zh_CN: 取消
+  Continue:
+    en: Continue
+    de: Weiter
+    es: Continuar
+    fr: Continuer
+    ja: 続ける
+    ko: 계속
+    zh_CN: 继续
+  Don’t Save:
+    en: Don’t Save
+    de: Nicht sichern
+    es: No guardar
+    fr: Ne pas enregistrer
+    ja: 保存しない
+    ko: 저장 안 함
+    zh_CN: 不存储
+  Save:
+    en: Save
+    de: Sichern
+    es: Guardar
+    fr: Enregistrer
+    ja: 保存
+    ko: 저장
+    zh_CN: 存储
+  Delete:
+    en: Delete
+    de: Löschen
+    es: Eliminar
+    fr: Supprimer
+    ja: 削除
+    ko: 삭제
+    zh_CN: 删除
+  Ignore:
+    en: Ignore
+    de: Ignorieren
+    es: Ignorar
+    fr: Ignorer
+    ja: 無視
+    ko: 무시
+    zh_CN: 忽略
+  Locate:
+    en: Locate
+    de: Suchen
+    es: Localizar
+    fr: Rechercher
+    ja: 場所を指定
+    ko: 지정
+    zh_CN: 查找
+  Skip:
+    en: Skip
+    de: Überspringen
+    es: Omitir
+    fr: Ignorer
+    ja: スキップ
+    ko: 건너뛰기
+    zh_CN: 跳过
+  Change:
+    en: Change
+    de: Ändern
+    es: Cambiar
+    fr: Changer
+    ja: 変更
+    ko: 변경
+    zh_CN: 更改
+  Don’t Change:
+    en: Don’t Change
+    de: Nicht ändern
+    es: No cambiar
+    fr: Ne pas changer
+    ja: 変更しない
+    ko: 변경 안 함
+    zh_CN: 不更改
+  Replace:
+    en: Replace
+    de: Ersetzen
+    es: Reemplazar
+    fr: Remplacer
+    ja: 置き換える
+    ko: 대치
+    zh_CN: 替换
+  Overwrite:
+    en: Overwrite
+    de: Überschreiben
+    es: Sobrescribir
+    fr: Remplacer
+    ja: 上書き
+    ko: 덮어쓰기
+    zh_CN: 覆盖
+  Use:
+    en: Use
+    de: Verwenden
+    es: Usar
+    fr: Utiliser
+    ja: 使用
+    ko: 사용
+    zh_CN: 使用
+  Open Settings:
+    en: Open Settings
+    de: Einstellungen öffnen
+    es: Abrir Ajustes
+    fr: Ouvrir Réglages
+    ja: “設定”を開く
+    ko: 설정 열기
+    zh_CN: 打开设置
+  Proceed:
+    en: Proceed
+    de: Fortfahren
+    es: Continuar
+    fr: Poursuivre
+    ja: 続ける
+    ko: 계속
+    zh_CN: 继续
+  Recover:
+    en: Recover
+    de: Wiederherstellen
+    es: Recuperar
+    fr: Restaurer
+    ja: 復元
+    ko: 복구
+    zh_CN: 恢复
+  Unfreeze:
+    en: Unfreeze
+    de: Freeze aufheben
+    es: Descongelar
+    fr: Dégeler
+    ja: フリーズを解除
+    ko: 프리즈 해제
+    zh_CN: 解冻
+  ? 'The last selected audio interface is not available.
+
+    The previously selected interface “%@” will be used instead for this session.'
+  : en: 'The last selected audio interface is not available.
+
+      The previously selected interface “%@” will be used instead for this session.'
+    de: 'Die zuletzt verwendete Audio-Schnittstelle ist nicht verfügbar.
+
+      Für diese Sitzung wird stattdessen die zuvor ausgewählte Schnittstelle „%@“ verwendet.'
+    es: 'La última interfaz de audio seleccionada no está disponible
+
+      En su lugar se utilizará la interfaz de audio seleccionada anteriormente (%@) para esta sesión.'
+    fr: 'La dernière interface audio sélectionnée n’est pas disponible.
+
+      L’interface audio sélectionnée juste avant « %@ » sera utilisée pour cette session.'
+    ja: '最後に選択したオーディオインターフェイスは現在使用できません。
+
+      このセッションでは以前に選択したインターフェイス“%@”が使用されます。'
+    ko: '마지막에 선택한 오디오 인터페이스를 사용할 수 없습니다.
+
+      이 세션 대신에 이전에 선택한 ‘%@’ 인터페이스가 사용됩니다.'
+    zh_CN: '最后一个选择的音频接口不可用。
+
+      此期间将改用之前所选的接口“%@”。'
+  ? 'The previously selected audio interface is not available.
+
+    The built-in audio inputs and outputs of the ^C will be used instead for this session.'
+  : en: 'The previously selected audio interface is not available.
+
+      The built-in audio inputs and outputs of the ^C will be used instead for this session.'
+    de: 'Die bisherige Audio-Schnittstelle ist nicht verfügbar.
+
+      Für diese Sitzung werden stattdessen die integrierten Audio-Ein- und -Ausgänge des ^C verwendet.'
+    es: 'La interfaz de audio anteriormente seleccionada no está disponible
+
+      En su lugar se usarán las entradas y salidas de audio integradas del ^C durante esta sesión.'
+    fr: 'L’interface audio précédemment sélectionnée n’est pas disponible.
+
+      Les entrées et sorties de l’audio intégré de l’appareil ^C seront utilisées à la place pour cette session.'
+    ja: '以前選択したオーディオインターフェイスは現在使用できません。
+
+      このセッションではコンピュータの内蔵オーディオ入力/出力が使用されます。'
+    ko: '이전에 선택한 오디오 인터페이스를 사용할 수 없습니다.
+
+      이 세션 대신 ^C의 내장 오디오 입력 및 출력이 사용됩니다.'
+    zh_CN: '之前选择的音频接口不可用。
+
+      此期间将改用 ^C 内建的音频输入输出。'
+  Do you want to save the changes you made to “%@”?:
+    en: Do you want to save the changes you made to “%@”?
+    de: Möchtest du die an „%@“ vorgenommenen Änderungen sichern?
+    es: ¿Quieres guardar los cambios efectuados en “%@”?
+    fr: Souhaitez-vous enregistrer les modifications effectuées dans « %@ » ?
+    ja: “%@”に加えた変更を保存しますか?
+    ko: 변경 사항을 ‘%@’에 저장하겠습니까?
+    zh_CN: 你要将所做的更改存储到“%@”吗？
+  Do you want to save the changes made to the Alternative “%@”?:
+    en: Do you want to save the changes made to the Alternative “%@”?
+    de: Möchtest du die Änderungen an der Alternative „%@“ sichern?
+    es: ¿Quieres guardar los cambios realizados en la alternativa “%@”?
+    fr: Voulez-vous enregistrer les modifications apportées à l’alternative « %@ » ?
+    ja: 代替バージョン“%@”に加えた変更を保存しますか?
+    ko: 대체 ‘%@’의 변경사항을 저장하겠습니까?
+    zh_CN: 你要存储对备选“%@”所做的更改吗？
+  Do you want to save the document “%@”?:
+    en: Do you want to save the document “%@”?
+    de: Möchtest du das Dokument „%@“ sichern?
+    es: ¿Quieres guardar el documento “%@”?
+    fr: Souhaitez-vous enregistrer le document « %@ » ?
+    ja: 書類“%@”を保存しますか?
+    ko: ‘%@’ 문서를 저장하겠습니까?
+    zh_CN: 你要存储文稿“%@”吗?
+  Your changes will be lost if you don’t save them.:
+    en: Your changes will be lost if you don’t save them.
+    de: Deine Änderungen gehen verloren, wenn du sie nicht sicherst.
+    es: Tus cambios se perderán si no los guardas.
+    fr: Vos modifications seront perdues si vous n’enregistrez pas.
+    ja: 保存しないと、変更内容は失われます。
+    ko: 저장하지 않으면 변경사항이 유실될 것입니다.
+    zh_CN: 如果更改不被存储，则会丢失。
+  An item named “%@” already exists in this location. Do you want to replace it with the one you are exporting?:
+    en: An item named “%@” already exists in this location. Do you want to replace it with the one you are exporting?
+    de: An diesem Ort existiert bereits ein Objekt mit dem Namen „%@“. Möchtest du es durch das zu exportierende Objekt ersetzen?
+    es: Ya existe un ítem denominado “%@” en esta ubicación. ¿Quieres reemplazarlo por el que estás exportando?
+    fr: Un élément nommé « %@ » existe déjà à cet endroit. Souhaitez-vous le remplacer par celui en cours d’exportation ?
+    ja: “%@”という項目はこの場所にすでに存在します。これから書き出す項目と置き換えますか?
+    ko: 이 위치에 이미 ‘%@’ 이름을 가진 항목이 있습니다. 현재 내보내고 있는 항목으로 대치하겠습니까?
+    zh_CN: 此位置中已存在名为“%@”的项目。要使用正在导出的项目来替换它吗？
+  A file or folder with the same name already exists in %@. Replacing it will overwrite its current contents.:
+    en: A file or folder with the same name already exists in %@. Replacing it will overwrite its current contents.
+    de: Eine Datei oder ein Ordner mit diesem Namen ist bereits in %@ vorhanden. Durch Ersetzen wird der aktuelle Inhalt überschrieben.
+    es: Ya existe un archivo con el mismo nombre en %@. Si lo reemplazas, sobrescribirás su contenido actual.
+    fr: Un fichier ou dossier portant ce nom existe déjà dans %@. Son remplacement entraînera l’écrasement de son contenu.
+    ja: '%@には同じ名前のファイルまたはフォルダがすでにあります。置き換えると、現在の内容が上書きされます。'
+    ko: '%@에 동일한 이름의 파일이나 폴더가 이미 존재합니다. 대치하면 현재 콘텐츠를 덮어씁니다.'
+    zh_CN: “%@”中已存在一个同名的文件或文件夹。替换它将覆盖其当前的内容。
+  The export operation failed.:
+    en: The export operation failed.
+    de: Der Exportvorgang ist fehlgeschlagen.
+    es: Error de la operación de exportación.
+    fr: Échec de l’opération d’exportation.
+    ja: 書き出せませんでした。
+    ko: 내보내기에 실패했습니다.
+    zh_CN: 导出操作失败。
+  ? 'This project can’t be loaded because it was created by a newer ^P version.
+
+    Please update ^P!'
+  : en: 'This project can’t be loaded because it was created by a newer Logic Pro version.
+
+      Please update Logic Pro!'
+    de: 'Dieses Projekt kann nicht geladen werden, da es mit einer neueren Version von Logic Pro erstellt wurde.
+
+      Bitte aktualisiere Logic Pro!'
+    es: 'No se puede cargar este proyecto porque se creó con una versión de Logic Pro más reciente.
+
+      Actualiza Logic Pro.'
+    fr: 'Ce projet ne peut pas être chargé car il a été créé par une nouvelle version de Logic Pro.
+
+      Veuillez mettre à jour Logic Pro.'
+    ja: 'このプロジェクトは新しいバージョンのLogic Proで作成されているため読み込めません。
+
+      Logic Proをアップデートしてください。'
+    ko: '이 프로젝트는 최신 버전의 Logic Pro에서 생성되었기 때문에 로드할 수 없습니다.
+
+      Logic Pro를 업데이트하십시오!'
+    zh_CN: '此项目无法载入，因为它由更高版本的 Logic Pro 创建。
+
+      请更新 Logic Pro！'
+  ? 'Warning! This project was created by a newer ^P version.
+
+    This may cause problems.
+
+    Please update ^P.'
+  : en: 'Warning! This project was created by a newer Logic Pro version.
+
+      This may cause problems.
+
+      Please update Logic Pro.'
+    de: 'Achtung! Dieses Projekt wurde von einer neueren Version von Logic Pro erstellt.
+
+      Dies kann Probleme verursachen.
+
+      Bitte aktualisiere Logic Pro.'
+    es: 'Advertencia: Este proyecto se ha creado con una versión de Logic Pro más reciente
+
+      Esto puede causar problemas.
+
+      Actualiza Logic Pro.'
+    fr: 'Avertissement : ce projet a été créé avec une version de Logic Pro plus récente.
+
+      Ceci peut entraîner des problèmes.
+
+      Veuillez mettre à jour Logic Pro.'
+    ja: '警告! このプロジェクトは新しいバージョンのLogic Proで作成されています。
+
+      そのため問題が起きる可能性があります。
+
+      Logic Proをアップデートしてください。'
+    ko: '경고! 이 프로젝트는 최신 버전의 Logic Pro에서 생성되었습니다.
+
+      문제가 발생할 수 있습니다.
+
+      Logic Pro를 업데이트하십시오.'
+    zh_CN: '警告！此项目由更高版本的 Logic Pro 所创建。
+
+      可能会造成问题。
+
+      请更新 Logic Pro。'
+  ? 'Change Project Sample Rate to %@?
+
+    One or more added audio files have a sample rate different than the project sample rate. Do you want to change the project sample rate to match the highest file sample rate?'
+  : en: 'Change Project Sample Rate to %@?
+
+      One or more added audio files have a sample rate different than the project sample rate. Do you want to change the project sample rate to match the highest file sample rate?'
+    de: 'Projekt-Sample-Rate auf %@ ändern?
+
+      Eine oder mehrere hinzugefügte Audiodateien haben eine andere Sample-Rate als das Projekt. Möchtest du die Projekt-Sample-Rate so ändern, dass sie mit der höchsten Datei-Sample-Rate übereinstimmt?'
+    es: '¿Quieres cambiar la frecuencia de muestreo del proyecto a %@ kHz?
+
+      Uno o varios de los archivos de audio añadidos tienen una frecuencia de muestreo diferente a la del proyecto. ¿Quieres cambiar la frecuencia de muestreo del proyecto por la frecuencia más alta de los archivos?'
+    fr: 'Changer le taux d’échantillonnage du projet à %@ ?
+
+      Un ou plusieurs fichiers audio ajoutés ont un taux d’échantillonnage différent de celui du projet. Voulez-vous change le taux d’échantillonnage du projet pour qu’il correspond à celui le plus élevé ?'
+    ja: "プロジェクトのサンプルレートを%@ kHzに変更しますか? \n追加したオーディオファイルの1つ以上にプロジェクトとは異なるサンプルレートが設定されています。この中で最も高いサンプルレートに合わせてプロジェクトのサンプルレートを変更しますか?"
+    ko: '프로젝트 샘플률을 %@(으)로 변경하겠습니까?
+
+      하나 이상의 추가된 오디오 파일의 샘플률이 프로젝트 샘플률과 다릅니다. 프로젝트 샘플률을 가장 높은 파일 샘플률과 일치하도록 변경하겠습니까?'
+    zh_CN: '要将项目采样速率更改为 %@ 吗？
+
+      所添加的一个或多个音频文件与项目采样速率不同。你要更改项目采样速率以匹配最高文件采样速率吗？'
+  ? 'Missing file in Sampler Instrument
+
+    The Sampler Instrument “%@” is missing the audio file “%@”.
+
+    '
+  : en: 'Missing file in Sampler Instrument
+
+      The Sampler Instrument “%@” is missing the audio file “%@”.
+
+      '
+    de: 'Fehlende Datei in Sampler Instrument
+
+      Im Sampler Instrument „%@“ fehlt die Audiodatei „%@“.
+
+      '
+    es: 'Falta un archivo en el instrumento de sampler
+
+      Al instrumento de sampler “%@” le falta el archivo de audio “%@”.
+
+      '
+    fr: 'Fichier manquant dans l’instrument échantillonné
+
+      L’instrument échantillonné « %@ » est manquant dans le fichier audio « %@ ».
+
+      '
+    ja: 'サンプラー音源にファイルがありません
+
+      サンプラー音源“%@”にオーディオファイル“%@”がありません。
+
+      '
+    ko: 'Sampler 악기에서 파일이 유실됨
+
+      ‘%@’ Sampler 악기에서 ‘%@’ 오디오 파일이 유실되었습니다.
+
+      '
+    zh_CN: '采样器乐器中缺少文件
+
+      采样器乐器“%@”中缺少音频文件“%@”。
+
+      '
+  Missing Audio Files in Plug-ins:
+    en: Missing Audio Files in Plug-ins
+    de: Audiodateien in Plug-ins fehlen
+    es: Faltan archivos de audio en los módulos
+    fr: Fichiers manquant dans les modules
+    ja: プラグインにオーディオファイルがありません
+    ko: 플러그인의 오디오 파일 유실
+    zh_CN: 插件中缺少音频文件
+  Plug-in “%@” for device “%@” could not be loaded.:
+    en: Plug-in “%@” for device “%@” could not be loaded.
+    de: Plug-in „%@“ für das Gerät „%@“ konnte nicht geladen werden.
+    es: No se ha podido cargar el módulo “%@” para el dispositivo “%@”.
+    fr: Impossible de charger le module « %@ » pour l’appareil « %@ ».
+    ja: デバイス“%2$@”用のプラグイン“%1$@”を読み込めませんでした。
+    ko: ‘%2$@’ 기기에 대한 ‘%1$@’ 플러그인을 로드할 수 없습니다.
+    zh_CN: 未能载入用于设备“%2$@”的插件“%1$@”。
+  Plug-in for device “%@” is missing.:
+    en: Plug-in for device “%@” is missing.
+    de: Plug-in für Gerät „%@“ fehlt.
+    es: Falta el módulo para el dispositivo “%@”.
+    fr: Module manquant pour l’appareil « %@ ».
+    ja: デバイス“%@”用のプラグインが見つかりません。
+    ko: ‘%@’ 기기의 플러그인이 유실되었습니다.
+    zh_CN: 设备“%@”所用的插件丢失。
+  ? 'Audio Units plug-in missing on frozen track
+
+    Track %@ is frozen and uses an Audio Units plug-in which is not installed on this system. Do you want to unfreeze the track? This action cannot be undone.'
+  : en: 'Audio Units plug-in missing on frozen track
+
+      Track %@ is frozen and uses an Audio Units plug-in which is not installed on this system. Do you want to unfreeze the track? This action cannot be undone.'
+    de: 'Audio Units-Plug-in für Spur im Freeze-Modus fehlt
+
+      Spur %@ befindet sich im Freeze-Modus und verwendet ein Audio Units-Plug-in, das auf diesem System nicht installiert ist. Soll der Freeze-Modus aufgehoben werden? Diese Aktion kann nicht widerrufen werden.'
+    es: 'Falta el módulo Audio Units en la pista congelada
+
+      La pista %@ está congelada y usa un módulo Audio Units que no está instalado en este sistema. ¿Quieres descongelar la pista? Esta operación no se puede deshacer.'
+    fr: 'Un module Audio Units est manquant sur la piste gelée
+
+      La piste %@ et gelée et utilise un module Audio Units qui n''est pas installé sur ce système. Voulez-vous la dégeler ? Cette opération est irréversible.'
+    ja: 'フリーズされたトラックにAudio Unitプラグインがありません
+
+      トラック%@はフリーズされていて、このシステムにインストールされていないAudio Unitプラグインを使用しています。このトラックのフリーズを解除しますか? この操作は取り消せません。'
+    ko: '프리즈된 트랙에 Audio Unit 플러그인이 유실되었습니다.
+
+      트랙 %@이(가) 프리즈되어 있고 이 시스템에 설치되지 않은 Audio Unit 플러그인을 사용합니다. 트랙을 프리즈 해제하겠습니까? 이 동작은 실행 취소할 수 없습니다.'
+    zh_CN: '冻结的轨道上缺少音频单元插件
+
+      轨道“%@”已冻结且使用了未在此系统中安装的音频单元插件。你要解冻该轨道吗？此操作无法撤销。'
+  The data for the chosen alternative is corrupt. The backup from %@ has been used instead.:
+    en: The data for the chosen alternative is corrupt. The backup from %@ has been used instead.
+    de: Die Daten für die ausgewählte Alternative sind beschädigt. Es wurde stattdessen das Backup von %@ verwendet.
+    es: Los datos de la alternativa seleccionada están corruptos. En su lugar se ha utilizado la copia de seguridad de %@.
+    fr: Les données pour l’alternative choisie sont endommagées. La copie de sauvegarde de %@ a été utilisée à la place.
+    ja: 選択した代替のデータが破損しています。代わりに、%@からのバックアップが使用されています。
+    ko: 선택한 대체 버전의 데이터가 손상되었습니다. %@의 백업을 대신 사용하였습니다.
+    zh_CN: 所选备选的数据已损坏。改为使用 %@ 的备份。
