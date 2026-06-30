@@ -146,9 +146,11 @@ def export():
             export_state['project'] = project
             export_state['reason'] = reason
             export_state['detail'] = getattr(e, 'dialog', None) or {'message': str(e)}
-            # One flushed marker line → Electron main fires the native notification.
-            print(EXPORT_FAILURE_MARKER + json.dumps({'project': project,
-                                                      'reason': reason}), flush=True)
+            # One flushed marker line → Electron main fires the native notification
+            # AND appends the in-UI inbox entry (detail = raw {title,body,buttons}).
+            print(EXPORT_FAILURE_MARKER + json.dumps(
+                {'project': project, 'reason': reason,
+                 'detail': export_state['detail']}), flush=True)
         finally:
             with _export_lock:
                 _export_in_flight = False

@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getHistory: () => ipcRenderer.invoke('history:get'),
   saveHistory: (entry) => ipcRenderer.invoke('history:save', entry),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
+  getInbox: () => ipcRenderer.invoke('inbox:get'),
+  clearInbox: () => ipcRenderer.invoke('inbox:clear'),
 });

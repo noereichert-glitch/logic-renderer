@@ -18,6 +18,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(`screen-${screen}`).classList.add('active');
     if (screen === 'history') loadHistory();
+    if (screen === 'inbox') loadInbox();
   });
 });
 
@@ -343,6 +344,44 @@ async function openHistoryEntry(h) {
 document.getElementById('btn-clear-history').addEventListener('click', async () => {
   await window.electronAPI.clearHistory();
   loadHistory();
+});
+
+// ── Inbox (critically-failed renders) ────────────────────────────────────────
+// Mirrors History: persistent electron-store list, populated by the main process
+// from the [[EXPORT_FAILURE]] signal (terminal failures only). Read-only here.
+async function loadInbox() {
+  const messages = await window.electronAPI.getInbox();
+  const list = document.getElementById('inbox-list');
+
+  if (!messages.length) {
+    list.innerHTML = '<div class="empty-state">No messages. Failed renders will appear here.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  messages.forEach(m => {
+    const date = new Date(m.date).toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.innerHTML = `
+      <div class="history-icon">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2L1 17h18L10 2z" stroke="#ff5c5c" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 14v.5" stroke="#ff5c5c" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <div class="history-info">
+        <div class="history-name">Render failed — ${m.project || 'project'}</div>
+        <div class="history-meta">${m.reason || ''}</div>
+        <div class="history-meta">${date}</div>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+}
+
+document.getElementById('btn-clear-inbox').addEventListener('click', async () => {
+  await window.electronAPI.clearInbox();
+  loadInbox();
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────

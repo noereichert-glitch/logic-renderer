@@ -93,6 +93,22 @@ function handleServerLine(line) {
   } catch (e) {
     console.error('[Notify] failed to show notification:', e);
   }
+  // Persist the same terminal-failure signal to the in-UI inbox (electron-store),
+  // mirroring history:*. Driven from here (not the renderer poll) so the message is
+  // recorded even while the app is backgrounded. detail = raw {title,body,buttons}.
+  try {
+    const messages = store.get('messages', []);
+    messages.unshift({
+      project,
+      reason,
+      detail: (payload && payload.detail) || null,
+      date: new Date().toISOString(),
+    });
+    if (messages.length > 50) messages.splice(50);
+    store.set('messages', messages);
+  } catch (e) {
+    console.error('[Inbox] failed to save message:', e);
+  }
 }
 
 app.whenReady().then(() => {
@@ -153,5 +169,15 @@ ipcMain.handle('history:save', (event, entry) => {
 
 ipcMain.handle('history:clear', () => {
   store.set('history', []);
+  return [];
+});
+
+// In-UI message inbox (critically-failed renders) — mirrors history:* exactly.
+ipcMain.handle('inbox:get', () => {
+  return store.get('messages', []);
+});
+
+ipcMain.handle('inbox:clear', () => {
+  store.set('messages', []);
   return [];
 });

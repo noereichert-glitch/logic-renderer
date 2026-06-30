@@ -32,6 +32,10 @@
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           History
         </button>
+        <button class="nav-btn" data-screen="inbox">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12v8H2V4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 4l6 4.5L14 4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Inbox
+        </button>
       </nav>
 
       <div class="sidebar-footer">
@@ -143,6 +147,17 @@
         </div>
         <div id="history-list" class="history-list">
           <div class="empty-state">No exports yet. Start by dropping a .logicx project.</div>
+        </div>
+      </div>
+
+      <!-- INBOX SCREEN (critically-failed renders) -->
+      <div id="screen-inbox" class="screen">
+        <div class="screen-header">
+          <h2>Messages</h2>
+          <button class="btn-outline btn-sm" id="btn-clear-inbox">Clear All</button>
+        </div>
+        <div id="inbox-list" class="history-list">
+          <div class="empty-state">No messages. Failed renders will appear here.</div>
         </div>
       </div>
 
