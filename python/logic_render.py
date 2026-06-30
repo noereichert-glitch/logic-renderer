@@ -36,8 +36,18 @@ docs/2026-06-06/DISCOVERY.md for the probes that produced these):
 ═══════════════════════════════════════════════════════════════════════════════
 """
 import os
+import re
 import subprocess
 import time
+
+# DialogGuard decision engine (step 6a). Imported defensively so the driver still
+# loads if the engine/PyYAML are ever absent — the headless path then logs and
+# skips auto-handling (legacy path never touches it). See python/dialog_guard.py.
+try:
+    from dialog_guard import DialogGuard, Decision
+except Exception:  # pragma: no cover - engine always present in this repo
+    DialogGuard = None
+    Decision = None
 
 
 LOGIC_APP_CANDIDATES = [
@@ -173,13 +183,43 @@ class LogicCrashedError(RuntimeError):
     relaunch and retry."""
 
 
+class DialogGuardPause(RuntimeError):
+    """Raised (headless only) when the DialogGuard decides a live dialog must STOP
+    the job:
+      • PAUSE — an unknown/never-safe dialog → we never guess (no click); or
+      • fail_job/terminal — a recognized terminal dialog (export failed, project
+        created by a newer Logic) → we click its safe OK to clear the modal, THEN
+        raise so the job stops.
+    The orchestrator's try/finally quits Logic cleanly (never saving); the server's
+    error handler surfaces this to the user. Carries the verbatim dialog so the
+    notification layer can show {title, body, buttons} (learn-loop / inbox)."""
+
+    def __init__(self, dialog, decision):
+        self.dialog = dict(dialog or {})
+        self.decision = decision
+        self.rule_id = getattr(decision, 'rule_id', None)
+        self.terminal = bool(getattr(decision, 'terminal', False))
+        title = self.dialog.get('title') or ''
+        body = self.dialog.get('body') or ''
+        buttons = self.dialog.get('buttons') or []
+        kind = 'job-failed' if self.terminal else 'paused'
+        super().__init__(
+            f'DialogGuard {kind} [rule={self.rule_id}]: '
+            f'{(title or body)[:120]!r} buttons={buttons} — '
+            f'{getattr(decision, "reason", "")}')
+
+
 # ── helpers ────────────────────────────────────────────────────────────────────
-def _osascript(script: str, timeout: float = 60.0) -> str:
+def _osascript(script: str, timeout: float = 60.0, strip: bool = True) -> str:
     r = subprocess.run(['osascript', '-e', script], capture_output=True,
                        text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f'osascript failed: {r.stderr.strip()}')
-    return r.stdout.strip()
+    # strip=False preserves the raw stdout. Needed by the dialog scanner: its records
+    # are delimited by RS(0x1e)/US(0x1f), and Python counts \x1c-\x1f as whitespace,
+    # so .strip() would eat a LEADING separator (an empty title field begins with one)
+    # and silently drop the record. Default True keeps every other caller unchanged.
+    return r.stdout.strip() if strip else r.stdout
 
 
 def _as_str(s: str) -> str:
@@ -266,6 +306,9 @@ class LogicRenderBridge:
         # for such a gap (then proceed best-effort so a render never hangs forever).
         self._idle_min = 0.7
         self._idle_timeout = 60.0
+        # DialogGuard engine (lazy-loaded once on first use, headless only).
+        self._guard = None
+        self._guard_loaded = False
 
     # — lifecycle —
     def launch(self, project_path: str):
@@ -313,7 +356,7 @@ class LogicRenderBridge:
         proc = self.process_name
         # Headless: a blocking free-floating AXDialog (e.g. the audio-interface
         # alert) must NOT count as "ready" (catalog requirement #2). We refuse ready
-        # while one is present and clear it via _auto_dismiss_dialogs() each tick.
+        # while one is present and let the DialogGuard handle it each tick.
         dialog_guard = ('if (count of (windows whose subrole is "AXDialog")) > 0 '
                         'then return "no"\n            ' if self.headless else '')
         script = f'''tell application "System Events" to tell process "{_as_str(proc)}"
@@ -328,9 +371,12 @@ class LogicRenderBridge:
             return "no"
         end tell'''
         while time.time() < end:
+            # DialogGuard runs OUTSIDE the broad try below so a DialogGuardPause
+            # (unknown/terminal dialog) propagates and aborts the wait instead of
+            # being swallowed. Transient scan errors are handled inside _handle_dialogs.
+            if self.headless:
+                self._handle_dialogs()
             try:
-                if self.headless:
-                    self._auto_dismiss_dialogs()   # clear blockers before judging ready
                 if _osascript(script, timeout=10) == 'ready':
                     time.sleep(settle)
                     return self.is_alive()
@@ -407,11 +453,13 @@ class LogicRenderBridge:
         # Defensive: clear a modal "Key Command Assignment Conflicts" sheet that can
         # block the main window before we try to open the Export menu.
         self._dismiss_conflict_sheet()
-        # Headless: also clear any blocking free-floating AXDialog / sheet (e.g. the
-        # audio-interface alert) right before opening the Export menu (catalog
-        # requirement #1) — safe whitelisted buttons only, cursor never moves.
+        # Headless: run the DialogGuard right before opening the Export menu (catalog
+        # requirement #1) — engine decides per dialog; element clicks only, cursor
+        # never moves. Context carries the pass # + destination for the C2 gate. May
+        # raise DialogGuardPause (propagates → orchestrator quits Logic cleanly).
         if self.headless:
-            self._auto_dismiss_dialogs()
+            self._handle_dialogs(self._dialog_context(bypass_fx=bypass_fx,
+                                                      dest=output_folder))
 
         # 1. Open the export dialog. Headless: the menu-bar element click works
         # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`, no
@@ -623,28 +671,92 @@ class LogicRenderBridge:
             time.sleep(0.4)
         return False
 
-    # — minimal safe dialog auto-dismiss (headless DialogGuard seed, P6) —
-    # Whitelist of SAFE dismiss buttons we may click. Anything else is left alone;
-    # in particular we NEVER click a destructive verb or "Open Settings" (those are
-    # never in this set, so they can't be clicked by construction). Buttons starting
-    # with "Use " (e.g. "Use MacBook Pro Speakers") are also safe (accept default).
-    _SAFE_DISMISS = ('OK', 'Continue', 'Close')
-    _NEVER_CLICK = ('Delete', 'Discard', 'Overwrite', 'Replace', 'Move to Trash',
-                    'Open Settings', 'Reopen', 'Save')  # documentation / guard
+    # — DialogGuard: detector + decision + executor (headless only, step 6b) —
+    # Replaces the old hardcoded safe-button whitelist with the catalog-driven
+    # engine (python/dialog_guard.py + dialog_rules.yaml). The detector READS every
+    # blocking dialog (free AXDialogs + sheets) → {title, body, buttons}; the engine
+    # DECIDES (CLICK / PAUSE / IGNORE, fail-safe); the executor does ONLY that — it
+    # never improvises a click. All element reads/clicks → backgrounded, cursor never
+    # moves. Legacy (not headless) never calls any of this.
+    _LOCALE_PREFIXES = (('de', 'de'), ('es', 'es'), ('fr', 'fr'), ('ja', 'ja'),
+                        ('ko', 'ko'), ('zh', 'zh_CN'))
 
-    def _auto_dismiss_dialogs(self):
-        """Scan the Logic process for BLOCKING pop-ups — free-floating AXDialogs AND
-        sheets — read each one's buttons, and click a SAFE whitelisted button only
-        (`_SAFE_DISMISS` or a "Use …" button). NEVER clicks a destructive verb
-        (Delete/Discard/Overwrite/Replace/Move to Trash) or "Open Settings"; if a
-        dialog has no safe button it is left untouched (fail safe). Element clicks
-        only → works against a BACKGROUNDED Logic, cursor never moves. Logs every
-        dialog it clears. Best-effort, non-fatal. Headless only. Returns the list of
-        cleared dialogs (dicts with title/body/clicked) — also used by the catalog
-        learn-loop (docs/2026-06-28/logic_dialog_catalog.md)."""
+    def _dialog_guard(self):
+        """Lazy-load the decision engine once. On failure (engine/YAML missing) log
+        and return None → the headless path then skips auto-handling rather than
+        crash; the readiness AXDialog gate still refuses to call a blocked Logic
+        'ready'."""
+        if not self._guard_loaded:
+            self._guard_loaded = True
+            if DialogGuard is None:
+                print('[DialogGuard] WARNING: engine not importable; dialogs will '
+                      'not be auto-handled this run.')
+                self._guard = None
+            else:
+                try:
+                    self._guard = DialogGuard()
+                except Exception as e:
+                    print(f'[DialogGuard] WARNING: rules failed to load ({e!r}); '
+                          f'dialogs will not be auto-handled this run.')
+                    self._guard = None
+        return self._guard
+
+    def _active_locale(self):
+        """Logic renders in the system UI language (no per-app override). Map the
+        first preferred language to one of the 7 shipped .lproj codes; default 'en'.
+        The engine also falls back to English, so an imperfect guess is safe."""
+        try:
+            out = subprocess.check_output(['defaults', 'read', '-g', 'AppleLanguages'],
+                                          text=True, timeout=5)
+        except Exception:
+            return 'en'
+        m = re.search(r'"([A-Za-z\-]+)"', out)
+        code = (m.group(1) if m else 'en').lower()
+        for prefix, lproj in self._LOCALE_PREFIXES:
+            if code.startswith(prefix):
+                return lproj
+        return 'en'
+
+    def _dialog_context(self, bypass_fx=None, dest=None):
+        """Context for the engine: pass # (wet=1 / raw=2) + destination root for the
+        C2 (overwrite) gate. bypass_fx None → pass unknown (readiness tick)."""
+        pass_number = None if bypass_fx is None else (2 if bypass_fx else 1)
+        return {'pass_number': pass_number,
+                'expected_dest_root': dest,
+                'actual_dest_root': dest,
+                'colliding_filename': None}
+
+    def _scan_blocking_dialogs(self):
+        """DETECTOR (read-only): every blocking pop-up on the Logic process — free
+        AXDialog windows AND sheets — as a list of {title, body, buttons[]}. Element
+        reads only; NO clicks here. Best-effort: transient AX errors → [].
+
+        Wire format (one record per dialog, terminated by LINEFEED \\n):
+            title <RS 0x1e> body <RS 0x1e> btn1 <US 0x1f> btn2 …
+        Every field is first run through AppleScript `flat1`, which collapses any
+        embedded CR/LF/RS/US to single spaces. That guarantees (a) no field can
+        contain the record terminator or a separator, so records split cleanly, and
+        (b) a multi-line body is flattened the SAME way the engine normalizes its
+        anchors (all whitespace runs → one space) — so a body whose static texts are
+        joined here is matched regardless of join style (the old " / " join broke
+        the C9 match; the old \\x1e + str.splitlines() parse shattered every record,
+        because splitlines() treats RS/GS/FS as line boundaries — we split on '\\n'
+        EXPLICITLY for exactly that reason). Multiple static texts are joined with a
+        space before flattening so adjacent sentences stay separated."""
         proc = self.process_name
-        script = f'''tell application "System Events"
+        script = f'''on flat1(s)
+            set d to AppleScript's text item delimiters
+            set AppleScript's text item delimiters to {{return, linefeed, character id 30, character id 31}}
+            set parts to text items of (s as text)
+            set AppleScript's text item delimiters to " "
+            set s to parts as text
+            set AppleScript's text item delimiters to d
+            return s
+        end flat1
+        tell application "System Events"
             if not (exists process "{_as_str(proc)}") then return ""
+            set fieldSep to (character id 30)
+            set btnSep to (character id 31)
             tell process "{_as_str(proc)}"
                 set containers to {{}}
                 repeat with w in windows
@@ -664,48 +776,141 @@ class LogicRenderBridge:
                         set theTitle to (name of c) as text
                     end try
                     set oldD to AppleScript's text item delimiters
-                    set AppleScript's text item delimiters to " / "
+                    set AppleScript's text item delimiters to " "
                     set theBody to ""
                     try
                         set theBody to (value of (every static text of c)) as text
                     end try
                     set AppleScript's text item delimiters to oldD
-                    set clicked to ""
+                    set theTitle to my flat1(theTitle)
+                    set theBody to my flat1(theBody)
+                    set btns to ""
                     repeat with b in buttons of c
                         set bn to ""
                         try
                             set bn to (name of b) as text
                         end try
-                        if (bn is "OK" or bn is "Continue" or bn is "Close" or bn starts with "Use ") then
-                            click b
-                            set clicked to bn
-                            exit repeat
+                        if bn is not "" then
+                            set bn to my flat1(bn)
+                            if btns is "" then
+                                set btns to bn
+                            else
+                                set btns to btns & btnSep & bn
+                            end if
                         end if
                     end repeat
-                    if clicked is not "" then
-                        set report to report & "title=" & theTitle & "||body=" & theBody & "||clicked=" & clicked & linefeed
-                    end if
+                    set report to report & theTitle & fieldSep & theBody & fieldSep & btns & linefeed
                 end repeat
                 return report
             end tell
         end tell'''
         try:
-            out = _osascript(script, timeout=15)
+            # strip=False: keep the RAW stdout. The record format starts with the
+            # title field, which is EMPTY for a titleless alert (e.g. C9) — so the
+            # output begins with the RS(0x1e) separator. .strip() counts \x1e as
+            # whitespace and would eat that leading separator, collapsing the 3-field
+            # record to 2 and dropping it. We split records on '\n' and skip blanks
+            # below, so the trailing '\n\n' is harmless without any strip.
+            out = _osascript(script, timeout=15, strip=False)
         except Exception:
             return []
-        cleared = []
-        for line in out.splitlines():
+        dialogs = []
+        # Split on the LINEFEED record terminator ONLY — never str.splitlines(),
+        # which would also break on the RS(0x1e) field separator and shatter every
+        # record (the 6b C9 parse regression). flat1 above guarantees no field
+        # carries a '\n', so one '\n'-line == one dialog record. Note: we split the
+        # UNSTRIPPED `line` on '\x1e' (the `line.strip()` below is only a blank-line
+        # test and does not mutate `line`), so an empty leading field survives as
+        # parts[0]==''.
+        for line in out.split('\n'):
             if not line.strip():
                 continue
-            d = {}
-            for part in line.split('||'):
-                if '=' in part:
-                    k, v = part.split('=', 1)
-                    d[k] = v
-            cleared.append(d)
-            print(f'[DialogGuard] cleared: title={d.get("title", "")!r} '
-                  f'button={d.get("clicked", "")!r} body={d.get("body", "")!r}')
-        return cleared
+            parts = line.split('\x1e')
+            if len(parts) < 3:
+                continue
+            title, body, btnblob = parts[0], parts[1], parts[2]
+            buttons = [b for b in btnblob.split('\x1f') if b]
+            dialogs.append({'title': title, 'body': body, 'buttons': buttons})
+        return dialogs
+
+    def _click_dialog_button(self, label):
+        """Click the button with EXACTLY this (localized) name in any AXDialog window
+        or sheet on the Logic process. Element click only → backgrounded, cursor
+        never moves. Returns True if it clicked."""
+        if not label:
+            return False
+        proc = self.process_name
+        lbl = _as_str(label)
+        try:
+            out = _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                repeat with w in windows
+                    try
+                        if ((subrole of w) as text) is "AXDialog" then
+                            repeat with b in buttons of w
+                                try
+                                    if (name of b) is "{lbl}" then
+                                        click b
+                                        return "clicked"
+                                    end if
+                                end try
+                            end repeat
+                        end if
+                    end try
+                    repeat with s in sheets of w
+                        repeat with b in buttons of s
+                            try
+                                if (name of b) is "{lbl}" then
+                                    click b
+                                    return "clicked"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end repeat
+                return ""
+            end tell''', timeout=10)
+            return out == 'clicked'
+        except Exception:
+            return False
+
+    def _log_dialog(self, dlg, locale, decision):
+        """Learn-loop: log every dialog the engine sees + its decision, so unknowns
+        (→ PAUSE) can be added to the catalog (docs/2026-06-28/logic_dialog_catalog.md)."""
+        btn = f' button={decision.button!r}' if decision.button else ''
+        print(f'[DialogGuard] locale={locale} '
+              f'title={dlg.get("title", "")!r} body={dlg.get("body", "")[:160]!r} '
+              f'buttons={dlg.get("buttons", [])} -> {decision.action}{btn} '
+              f'rule={decision.rule_id} reason={decision.reason!r}')
+
+    def _handle_dialogs(self, context=None):
+        """EXECUTOR (headless only). Detect → decide() → do ONLY what it returns:
+          • IGNORE → leave it.
+          • CLICK <button> → element-click that exact button (backgrounded). If the
+            decision is fail_job/terminal, click its OK then raise DialogGuardPause.
+          • PAUSE → raise DialogGuardPause WITHOUT clicking (safe abort).
+        Returns the list of (dialog, decision) handled this call. Transient scan
+        errors are swallowed (no dialogs); only DialogGuardPause is raised."""
+        if not self.headless:
+            return []
+        guard = self._dialog_guard()
+        if guard is None:
+            return []
+        locale = self._active_locale()
+        handled = []
+        for dlg in self._scan_blocking_dialogs():
+            decision = guard.decide(dlg, locale=locale, context=context)
+            self._log_dialog(dlg, locale, decision)
+            handled.append((dlg, decision))
+            if decision.action == Decision.IGNORE:
+                continue
+            if decision.action == Decision.PAUSE:
+                raise DialogGuardPause(dlg, decision)
+            if decision.action == Decision.CLICK:
+                self._click_dialog_button(decision.button)
+                if decision.terminal:
+                    # fail_job: modal cleared, now stop the job.
+                    raise DialogGuardPause(dlg, decision)
+        return handled
 
     def _dismiss_conflict_sheet(self):
         """If Logic shows the modal "Key Command Assignment Conflicts" sheet
@@ -775,6 +980,17 @@ class LogicRenderBridge:
         while time.time() < end:
             if not self.is_alive():
                 raise LogicCrashedError('Logic exited during export.')
+            # Headless: also run the DialogGuard each tick so a blocking dialog that
+            # appears AFTER the Export click — "The export operation failed.",
+            # disk-full, etc. — is detected → decided → handled the instant it shows
+            # (fail_job → click OK then raise DialogGuardPause(terminal); PAUSE /
+            # unrecognized → raise DialogGuardPause) instead of letting the bounce
+            # never arrive and the loop hang to its ~1800s timeout. Element reads/
+            # clicks only (backgrounded, cursor never moves); _handle_dialogs swallows
+            # transient scan errors and returns [] when nothing blocks, so a healthy
+            # bounce (no AXDialog/sheet) is untouched. Legacy path never calls this.
+            if self.headless:
+                self._handle_dialogs()
             snap = {}
             try:
                 for name in os.listdir(output_folder):
