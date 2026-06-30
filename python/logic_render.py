@@ -199,6 +199,9 @@ class DialogGuardPause(RuntimeError):
         self.decision = decision
         self.rule_id = getattr(decision, 'rule_id', None)
         self.terminal = bool(getattr(decision, 'terminal', False))
+        # Plain-language, actionable reason for the client (rule's user_message, or the
+        # generic fallback). The server surfaces this as the notification reason.
+        self.user_message = getattr(decision, 'user_message', '') or ''
         title = self.dialog.get('title') or ''
         body = self.dialog.get('body') or ''
         buttons = self.dialog.get('buttons') or []
@@ -731,6 +734,12 @@ class LogicRenderBridge:
         AXDialog windows AND sheets — as a list of {title, body, buttons[]}. Element
         reads only; NO clicks here. Best-effort: transient AX errors → [].
 
+        Only ACTIONABLE windows are returned: a candidate with no real (named)
+        button is skipped, because that is a not-yet-initialized window (the splash /
+        mid-load project window, whose AX names read `missing value`) rather than a
+        clickable modal — emitting it made decide() fail-safe PAUSE and abort a
+        healthy load. `missing value` is treated as absent for title and buttons.
+
         Wire format (one record per dialog, terminated by LINEFEED \\n):
             title <RS 0x1e> body <RS 0x1e> btn1 <US 0x1f> btn2 …
         Every field is first run through AppleScript `flat1`, which collapses any
@@ -773,7 +782,7 @@ class LogicRenderBridge:
                 repeat with c in containers
                     set theTitle to ""
                     try
-                        set theTitle to (name of c) as text
+                        if (name of c) is not missing value then set theTitle to (name of c) as text
                     end try
                     set oldD to AppleScript's text item delimiters
                     set AppleScript's text item delimiters to " "
@@ -788,10 +797,9 @@ class LogicRenderBridge:
                     repeat with b in buttons of c
                         set bn to ""
                         try
-                            set bn to (name of b) as text
+                            if (name of b) is not missing value then set bn to my flat1((name of b) as text)
                         end try
                         if bn is not "" then
-                            set bn to my flat1(bn)
                             if btns is "" then
                                 set btns to bn
                             else
@@ -799,7 +807,18 @@ class LogicRenderBridge:
                             end if
                         end if
                     end repeat
-                    set report to report & theTitle & fieldSep & theBody & fieldSep & btns & linefeed
+                    -- Skip not-yet-initialized / non-actionable windows: a candidate
+                    -- with NO real (named, non-`missing value`) button is the splash or
+                    -- the mid-load project window whose AX element names haven't
+                    -- populated yet (title "Logic Pro", every button/label reads
+                    -- `missing value`) — NOT a clickable modal. Emitting it made
+                    -- decide() fail-safe PAUSE and abort an otherwise-healthy load. A
+                    -- real dialog always exposes ≥1 named button; meanwhile the
+                    -- readiness AXDialog gate still refuses "ready" until the window
+                    -- clears, so a genuine blocker is caught once its buttons appear.
+                    if btns is not "" then
+                        set report to report & theTitle & fieldSep & theBody & fieldSep & btns & linefeed
+                    end if
                 end repeat
                 return report
             end tell

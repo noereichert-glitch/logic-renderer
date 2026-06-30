@@ -87,12 +87,17 @@ class Decision:
     PAUSE = 'pause-notify'
     IGNORE = 'ignore'
 
-    def __init__(self, action, button=None, rule_id=None, reason='', terminal=False):
+    def __init__(self, action, button=None, rule_id=None, reason='', terminal=False,
+                 user_message=''):
         self.action = action
         self.button = button          # localized label to click (CLICK only)
         self.rule_id = rule_id
         self.reason = reason
         self.terminal = terminal      # fail_job: clear the modal, then fail the job
+        # Plain-language, actionable sentence for the client (rule's `user_message`,
+        # or the generic fallback when no rule matched). Surfaced by the notification
+        # layer; empty for IGNORE/auto-handled paths that never reach the user.
+        self.user_message = user_message
 
     def __repr__(self):
         b = f' button={self.button!r}' if self.button else ''
@@ -111,6 +116,8 @@ class DialogGuard:
         self.loc = self.rules.get('localizations', {})
         self.never_click_keys = self.rules.get('never_click_keys', [])
         self.never_click_literals = self.rules.get('never_click_literals', [])
+        # Friendly, actionable message attached when a dialog matches NO rule.
+        self.generic_user_message = self.rules.get('generic_user_message', '')
 
     @staticmethod
     def _load(path):
@@ -195,44 +202,52 @@ class DialogGuard:
 
             action = rule.get('action')
             rid = rule.get('id')
+            # Resolved friendly message for this rule (fall back to the generic one).
+            umsg = rule.get('user_message') or self.generic_user_message
 
             if action == 'pause_notify':
                 return Decision(Decision.PAUSE, rule_id=rid,
-                                reason='rule=pause_notify')
+                                reason='rule=pause_notify', user_message=umsg)
 
             if action == 'fail_job':
                 btn = self._resolve_click(rule, locale, buttons_norm, never_norm)
                 if btn is None:
                     return Decision(Decision.PAUSE, rule_id=rid,
-                                    reason='fail_job but no safe OK button present')
+                                    reason='fail_job but no safe OK button present',
+                                    user_message=umsg)
                 return Decision(Decision.CLICK, button=btn, rule_id=rid,
-                                reason='fail_job → dismiss then fail', terminal=True)
+                                reason='fail_job → dismiss then fail', terminal=True,
+                                user_message=umsg)
 
             if action == 'dismiss_gated':
                 ok, detail = self._gate_replace(context)
                 if not ok:
                     return Decision(Decision.PAUSE, rule_id=rid,
-                                    reason=f'gate failed {detail}')
+                                    reason=f'gate failed {detail}', user_message=umsg)
                 btn = self._resolve_click(rule, locale, buttons_norm, never_norm)
                 if btn is None:
                     return Decision(Decision.PAUSE, rule_id=rid,
-                                    reason='gate passed but Replace not clickable')
+                                    reason='gate passed but Replace not clickable',
+                                    user_message=umsg)
                 return Decision(Decision.CLICK, button=btn, rule_id=rid,
-                                reason=f'gated Replace {detail}')
+                                reason=f'gated Replace {detail}', user_message=umsg)
 
             if action == 'dismiss_safe':
                 btn = self._resolve_click(rule, locale, buttons_norm, never_norm)
                 if btn is None:
                     return Decision(Decision.PAUSE, rule_id=rid,
-                                    reason='no safe clickable button present')
+                                    reason='no safe clickable button present',
+                                    user_message=umsg)
                 return Decision(Decision.CLICK, button=btn, rule_id=rid,
-                                reason='dismiss_safe')
+                                reason='dismiss_safe', user_message=umsg)
 
             if action == 'ignore':
-                return Decision(Decision.IGNORE, rule_id=rid, reason='rule=ignore')
+                return Decision(Decision.IGNORE, rule_id=rid, reason='rule=ignore',
+                                user_message=umsg)
 
-        # FAIL-SAFE: recognized as a dialog, but no rule matched → pause.
-        return Decision(Decision.PAUSE, reason='no rule matched (fail-safe)')
+        # FAIL-SAFE: recognized as a dialog, but no rule matched → pause + generic msg.
+        return Decision(Decision.PAUSE, reason='no rule matched (fail-safe)',
+                        user_message=self.generic_user_message)
 
 
 def load_guard(rules_path=_RULES_PATH):

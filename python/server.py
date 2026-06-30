@@ -14,6 +14,7 @@ from flask_cors import CORS
 import threading
 import os
 import glob
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,6 +24,16 @@ from logic_render import resolve_project_path
 
 app = Flask(__name__)
 CORS(app)
+
+# Friendly fallback reason for a terminal failure that is NOT a DialogGuard dialog
+# (e.g. Logic didn't load, crashed past its retries, or produced too few stems).
+GENERIC_FAILURE_REASON = (
+    "The render couldn't be completed. Please check the project opens in Logic Pro "
+    "and the output folder is writable, then try again."
+)
+# Single-line stdout marker the Electron main process watches to fire the native
+# failure notification. Emitted ONCE, only on a terminal render failure.
+EXPORT_FAILURE_MARKER = '[[EXPORT_FAILURE]]'
 
 export_state = {
     'status_title': 'Waiting…',
@@ -54,6 +65,10 @@ def _reset_state(output_folder):
         'project_folder': None,
         'sets': {},
         'output_folder': output_folder,
+        # Critical-failure signal (set only in run_export's terminal except).
+        'project': None,
+        'reason': None,
+        'detail': None,
     }
 
 
@@ -118,9 +133,22 @@ def export():
         except Exception as e:
             print(f'[Server] Export failed: {e}')
             export_state['done'] = True
+            # In-screen "Export failed" display is unchanged (raw error string).
             export_state['error'] = str(e)
             export_state['status_title'] = 'Export failed'
             export_state['status_sub'] = str(e)
+            # Critical-failure signal — set ONLY here (the terminal except, after the
+            # orchestrator's own auto-handling/retries have given up). A DialogGuard
+            # terminal/PAUSE carries a friendly user_message + the verbatim dialog;
+            # any other terminal error gets the generic friendly reason.
+            project = os.path.basename(file_path)
+            reason = (getattr(e, 'user_message', '') or '').strip() or GENERIC_FAILURE_REASON
+            export_state['project'] = project
+            export_state['reason'] = reason
+            export_state['detail'] = getattr(e, 'dialog', None) or {'message': str(e)}
+            # One flushed marker line → Electron main fires the native notification.
+            print(EXPORT_FAILURE_MARKER + json.dumps({'project': project,
+                                                      'reason': reason}), flush=True)
         finally:
             with _export_lock:
                 _export_in_flight = False

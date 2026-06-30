@@ -22,9 +22,14 @@ never_click_literals:
 - Don’t Reopen
 - Move to Trash
 - Discard
+# Friendly fallback shown to the client when a blocking dialog matches NO rule
+# (fail-safe PAUSE). Plain-language + actionable; the engine attaches it to the
+# Decision, which the notification layer surfaces as the failure reason.
+generic_user_message: "The render stopped on an unexpected Logic message and was cancelled safely — nothing was changed. Open the project in Logic to check it, then try again."
 rules:
 - id: audio_interface_unavailable
   action: dismiss_safe
+  user_message: "Your usual audio device wasn't available, so the computer's built-in output was used instead. Your stems are unaffected."
   click_keys:
   - OK
   - Use
@@ -37,6 +42,7 @@ rules:
     The built-in audio inputs and outputs of the ^C will be used instead for this session.'
 - id: save_changes_on_quit
   action: dismiss_safe
+  user_message: "Logic asked to save changes on quit; the render declined, so your project file was left untouched."
   click_keys:
   - Don’t Save
   - Delete
@@ -47,6 +53,7 @@ rules:
   - Your changes will be lost if you don’t save them.
 - id: export_overwrite
   action: dismiss_gated
+  user_message: "The export folder already contains files that don't belong to this render. Nothing was changed — clear the folder or choose a new one, then try again."
   gate: G1_dest_is_per_job_root AND G2_collider_is_our_wav AND G3_pass_1
   click_keys:
   - Replace
@@ -55,12 +62,14 @@ rules:
   - A file or folder with the same name already exists in %@. Replacing it will overwrite its current contents.
 - id: export_failed
   action: fail_job
+  user_message: "Logic couldn't write the stems and the export failed. This is usually a permissions or free-space problem with the output folder. Choose a writable folder with enough space, then try again."
   click_keys:
   - OK
   body_keys:
   - The export operation failed.
 - id: newer_version_blocking
   action: fail_job
+  user_message: "This project was made in a newer version of Logic Pro and can't be opened. Update Logic Pro to the latest version, then try again."
   click_keys:
   - OK
   body_keys:
@@ -69,6 +78,7 @@ rules:
     Please update ^P!'
 - id: newer_version_warning
   action: pause_notify
+  user_message: "This project was made in a newer version of Logic Pro and may not render correctly. Open it in the matching version or update Logic Pro, then try again."
   body_keys:
   - 'Warning! This project was created by a newer ^P version.
 
@@ -77,6 +87,7 @@ rules:
     Please update ^P.'
 - id: sample_rate_change
   action: pause_notify
+  user_message: "Some audio in this project has a different sample rate than the project. Open it in Logic, set the sample rate you want and save, then try again."
   note: 'if ever auto: click Don’t Change ONLY'
   body_keys:
   - 'Change Project Sample Rate to %@?
@@ -84,6 +95,7 @@ rules:
     One or more added audio files have a sample rate different than the project sample rate. Do you want to change the project sample rate to match the highest file sample rate?'
 - id: missing_audio_files
   action: pause_notify
+  user_message: "Some audio files this project uses are missing, so the render was stopped to avoid incomplete stems. Relink the missing files in Logic, then try again."
   body_keys:
   - 'Missing file in Sampler Instrument
 
@@ -93,6 +105,7 @@ rules:
   - Missing Audio Files in Plug-ins
 - id: missing_plugin
   action: pause_notify
+  user_message: "A plug-in this project needs isn't installed, so the render was stopped. Install the missing plug-in, then try again."
   body_keys:
   - Plug-in “%@” for device “%@” could not be loaded.
   - Plug-in for device “%@” is missing.
@@ -101,6 +114,7 @@ rules:
     Track %@ is frozen and uses an Audio Units plug-in which is not installed on this system. Do you want to unfreeze the track? This action cannot be undone.'
 - id: crash_recovery_revert
   action: pause_notify
+  user_message: "This project's data was damaged and Logic loaded a backup. Open it in Logic to check everything's correct, then try again."
   body_keys:
   - The data for the chosen alternative is corrupt. The backup from %@ has been used instead.
 localizations:

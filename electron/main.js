@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const Store = require('electron-store');
@@ -44,8 +44,19 @@ function startPythonServer() {
     env: { ...process.env }
   });
 
+  // Line-buffer the server's stdout: chunks can split mid-line, so accumulate and
+  // dispatch only on complete '\n'-terminated lines. Each line is logged, and a
+  // [[EXPORT_FAILURE]] marker line fires the native failure notification.
+  let stdoutBuffer = '';
   pythonProcess.stdout.on('data', (data) => {
-    console.log('[Python]', data.toString());
+    stdoutBuffer += data.toString();
+    let nl;
+    while ((nl = stdoutBuffer.indexOf('\n')) >= 0) {
+      const line = stdoutBuffer.slice(0, nl);
+      stdoutBuffer = stdoutBuffer.slice(nl + 1);
+      console.log('[Python]', line);
+      handleServerLine(line);
+    }
   });
 
   pythonProcess.stderr.on('data', (data) => {
@@ -55,6 +66,33 @@ function startPythonServer() {
   pythonProcess.on('close', (code) => {
     console.log('[Python] exited with code', code);
   });
+}
+
+const EXPORT_FAILURE_MARKER = '[[EXPORT_FAILURE]]';
+
+// Inspect one server stdout line; on the failure marker, fire a single native macOS
+// notification (project name + friendly reason). Electron's Notification shows even
+// when the app is backgrounded — which is the whole point (renders run invisibly).
+// Malformed payloads are logged and ignored, never thrown.
+function handleServerLine(line) {
+  const at = line.indexOf(EXPORT_FAILURE_MARKER);
+  if (at < 0) return;
+  let payload;
+  try {
+    payload = JSON.parse(line.slice(at + EXPORT_FAILURE_MARKER.length).trim());
+  } catch (e) {
+    console.error('[Notify] could not parse EXPORT_FAILURE payload:', e);
+    return;
+  }
+  const project = (payload && payload.project) || 'project';
+  const reason = (payload && payload.reason) || 'The render could not be completed.';
+  try {
+    if (Notification.isSupported()) {
+      new Notification({ title: `Render failed — ${project}`, body: reason }).show();
+    }
+  } catch (e) {
+    console.error('[Notify] failed to show notification:', e);
+  }
 }
 
 app.whenReady().then(() => {
