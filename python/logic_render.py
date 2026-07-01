@@ -38,6 +38,7 @@ docs/2026-06-06/DISCOVERY.md for the probes that produced these):
 import os
 import re
 import subprocess
+import threading
 import time
 
 # DialogGuard decision engine (step 6a). Imported defensively so the driver still
@@ -312,12 +313,95 @@ class LogicRenderBridge:
         # DialogGuard engine (lazy-loaded once on first use, headless only).
         self._guard = None
         self._guard_loaded = False
-        # The user's genuine frontmost app, captured ONCE before Logic launches
-        # (see launch()). Threaded to every focus restore so we never rely on a
-        # mid-flight snapshot — by the time the masked chords / quit run, Logic has
-        # self-activated on project load and a fresh snapshot reads 'Logic Pro X',
-        # making the restore a no-op that strands focus on Logic. Headless only.
+        # Focus tracking (headless only). The focus-restore target is the user's most
+        # recent REAL working window — an app that is neither Logic nor our own
+        # launcher (the send-stems Electron app is frontmost at trigger, so a single
+        # capture at launch grabs 'Electron', which is wrong). We instead track the
+        # latest real frontmost continuously via a lightweight background sampler, so
+        # switching to Claude mid-render makes 'Claude' the target.
+        #   _user_app          — latest REAL user app seen (None until one appears)
+        #   _launcher_apps     — process names that are OUR launcher, to exclude
+        #   _launcher_frontmost— exact launcher name seen frontmost at launch (the
+        #                        only fallback, used if the user NEVER left the app)
         self._user_app = None
+        self._launcher_apps = self._detect_launcher_apps()
+        self._launcher_frontmost = None
+        self._focus_sampler = None
+        self._focus_sampler_stop = None
+
+    # — focus tracking (headless only) —
+    def _detect_launcher_apps(self) -> set:
+        """Process names that are OUR launcher (the send-stems Electron app), to be
+        excluded as a focus-restore target. main.js passes them via the env var
+        STEMEXPORT_LAUNCHER_APPS on spawn (newline-separated: dev='Electron',
+        production=the packaged app's name); we ALSO derive the parent process name
+        as a fallback so exclusion works even if the env is missing. We never
+        hardcode only 'Electron'."""
+        names = set()
+        for n in os.environ.get('STEMEXPORT_LAUNCHER_APPS', '').split('\n'):
+            n = n.strip()
+            if n:
+                names.add(n)
+        # Fallback/augment: our parent process (Electron main / packaged app binary).
+        try:
+            out = subprocess.check_output(
+                ['ps', '-o', 'comm=', '-p', str(os.getppid())],
+                text=True, timeout=5).strip()
+            base = os.path.basename(out)
+            if base.lower().endswith('.app'):
+                base = base[:-4]
+            if base:
+                names.add(base)
+        except Exception:
+            pass
+        return names
+
+    def _is_launcher(self, name: str) -> bool:
+        return bool(name) and name in self._launcher_apps
+
+    def _is_real_user_app(self, name: str) -> bool:
+        """A genuine user window: non-empty, not Logic, not our launcher."""
+        return bool(name) and name != self.process_name and not self._is_launcher(name)
+
+    def _restore_target(self) -> str:
+        """Where a mid-render restore should send focus: the tracked real user app if
+        we've ever seen one, else the launcher we started from (user never left the
+        send-stems app). Never Logic."""
+        return self._user_app or self._launcher_frontmost
+
+    def _sample_user_app_once(self) -> str:
+        """Read the current frontmost; if it's a REAL user app, adopt it as the
+        restore target. Returns the raw frontmost read (for logging)."""
+        cur = _frontmost_app_name()
+        if self._is_real_user_app(cur) and cur != self._user_app:
+            self._user_app = cur
+            print(f'[FOCUS] sampler: tracked user app -> {cur!r}', flush=True)
+        return cur
+
+    def _start_focus_sampler(self):
+        """Start a daemon thread that samples the frontmost app every ~0.5s and keeps
+        _user_app pointed at the latest REAL user window. Read-only (never changes
+        focus, never moves the cursor); harmless alongside the export osascripts."""
+        if not self.headless or self._focus_sampler is not None:
+            return
+        self._focus_sampler_stop = threading.Event()
+
+        def _loop():
+            while not self._focus_sampler_stop.is_set():
+                try:
+                    self._sample_user_app_once()
+                except Exception:
+                    pass
+                self._focus_sampler_stop.wait(0.5)
+
+        self._focus_sampler = threading.Thread(target=_loop, daemon=True,
+                                               name='focus-sampler')
+        self._focus_sampler.start()
+
+    def _stop_focus_sampler(self):
+        if self._focus_sampler_stop is not None:
+            self._focus_sampler_stop.set()
+        self._focus_sampler = None
 
     # — lifecycle —
     def launch(self, project_path: str):
@@ -330,14 +414,25 @@ class LogicRenderBridge:
         focus-masking would only ever restore focus to Logic. Legacy: plain `open -a`
         (activates Logic), kept behind `if not self.headless:`."""
         resolved = resolve_project_path(project_path)
-        # Capture the user's genuine frontmost app ONCE, right here — BEFORE the
-        # `open` below starts Logic — so the end-of-job focus restore has a real
-        # target that is never Logic. Guarded on None so a post-crash relaunch()
-        # (Logic frontmost/dead by then) can't clobber it. Headless only; the
-        # legacy path leaves _user_app None and unused.
-        if self.headless and self._user_app is None:
-            self._user_app = _frontmost_app_name()
-            print(f'[focus] captured user app before launch: {self._user_app!r}')
+        # Begin tracking the user's REAL working window BEFORE `open` starts Logic.
+        # The frontmost at trigger is usually our own launcher (the send-stems app),
+        # which must NOT become the restore target — so we only adopt a real user app
+        # and let the background sampler keep it current as the user switches windows
+        # during the render. Headless only; the legacy path leaves this untouched.
+        if self.headless:
+            self._start_focus_sampler()
+            read = _frontmost_app_name()
+            if self._is_real_user_app(read):
+                self._user_app = read
+            elif self._is_launcher(read) and self._launcher_frontmost is None:
+                # Remember the exact launcher name so we can restore to it IF the user
+                # never leaves the send-stems app (the only time the launcher is a
+                # valid restore target).
+                self._launcher_frontmost = read
+            print(f'[FOCUS] launch(): frontmost={read!r} '
+                  f'launcher_apps={sorted(self._launcher_apps)} '
+                  f'-> _user_app={self._user_app!r} '
+                  f'launcher_frontmost={self._launcher_frontmost!r}', flush=True)
         cmd = ['open', '-g', '-a', self.app_path, resolved] if self.headless \
             else ['open', '-a', self.app_path, resolved]
         subprocess.run(cmd, check=True)
@@ -424,11 +519,13 @@ class LogicRenderBridge:
         proc = self.process_name
         self._wait_input_idle()                 # best-effort idle gap
         prior = _frontmost_app_name()
-        # Restore to the user app captured BEFORE launch — NOT `prior`. Once Logic
-        # self-activates on load, `prior` reads 'Logic Pro X' == proc and the
-        # restore below no-ops, stranding focus on Logic. Fall back to `prior` only
-        # if the pre-launch capture is somehow unavailable.
-        restore_to = self._user_app or prior
+        # Restore to the tracked REAL user app (or the launcher only if the user never
+        # left it) — NOT a mid-flight snapshot, which reads Logic once it self-
+        # activates and would no-op the restore, stranding focus on Logic.
+        restore_to = self._restore_target()
+        print(f'[FOCUS] masked-keys: prior(mid-flight)={prior!r} '
+              f'_user_app={self._user_app!r} launcher_frontmost={self._launcher_frontmost!r} '
+              f'-> restore_to={restore_to!r} (proc={proc!r})', flush=True)
         try:
             _set_app_frontmost(proc)
             time.sleep(0.15)
@@ -444,6 +541,11 @@ class LogicRenderBridge:
             # Always hand focus back to the user's app, even if the body errored.
             if restore_to and restore_to != proc:
                 _set_app_frontmost(restore_to)
+                print(f'[FOCUS] masked-keys: restored frontmost -> {restore_to!r}',
+                      flush=True)
+            else:
+                print(f'[FOCUS] masked-keys: restore SKIPPED — restore_to={restore_to!r} '
+                      f'is empty or == proc {proc!r}', flush=True)
 
     # — the export —
     def export_stems(self, output_folder: str, file_stem: str = 'stem',
@@ -1078,7 +1180,10 @@ class LogicRenderBridge:
             # Restore target is the pre-launch user app, not `prior` (which reads
             # 'Logic Pro X' == proc when Logic is frontmost at quit → no-op). See
             # _run_masked_keys.
-            restore_to = self._user_app or prior
+            restore_to = self._restore_target()
+            print(f'[FOCUS] quit_logic: prior(mid-flight)={prior!r} '
+                  f'_user_app={self._user_app!r} launcher_frontmost={self._launcher_frontmost!r} '
+                  f'-> restore_to={restore_to!r} (proc={proc!r})', flush=True)
             # Fire-and-forget — must NOT wait on this (it blocks until the prompt is
             # answered); we answer it concurrently in the poll below.
             quitter = subprocess.Popen(
@@ -1102,6 +1207,8 @@ class LogicRenderBridge:
                     focus_pulled = True
                     if restore_to and restore_to != proc:
                         _set_app_frontmost(restore_to)
+                        print(f"[FOCUS] quit_logic: immediate restore after "
+                              f"Don't-Save -> {restore_to!r}", flush=True)
                 elif not focus_pulled and _frontmost_app_name() == proc:
                     focus_pulled = True
                 time.sleep(0.05)
@@ -1119,6 +1226,8 @@ class LogicRenderBridge:
             # (no Don't-Save click ever landed to trigger the immediate restore above).
             if focus_pulled and not clicked_any and restore_to and restore_to != proc:
                 _set_app_frontmost(restore_to)
+                print(f'[FOCUS] quit_logic: fallback restore (focus pulled, no '
+                      f"Don't-Save click) -> {restore_to!r}", flush=True)
         else:
             # LEGACY (not headless) — UNCHANGED: polite frontmost ⌘Q, then the
             # original 0.5s Don't-Save sweep (cap 20s).
@@ -1151,18 +1260,42 @@ class LogicRenderBridge:
         if self.is_alive():
             subprocess.run(['pkill', '-9', '-x', proc], capture_output=True)
 
-        # Deterministic end-of-job focus restore (headless only). Belt-and-braces
-        # for the case where focus is STILL on Logic after quit — e.g. a Don't-Save
-        # prompt kept it frontmost and macOS didn't hand focus back on its own. Only
-        # act when focus is on Logic (or nowhere), so we never yank focus away from
-        # an app the user has since switched to. App activation only — cursor never
-        # moves; project is never saved.
-        if self.headless and self._user_app and self._user_app != proc:
+        # Deterministic end-of-job focus restore (headless only). Stop the sampler
+        # first so the decision is made against a frozen target, then:
+        #   • already on a REAL user app  → skip (that's exactly where the user wants
+        #     to be — including the case where they stayed in the send-stems app).
+        #   • on Logic / our launcher / nowhere, and a real user app is known → pull
+        #     that app forward (never leave focus stranded on Logic).
+        #   • no real user app ever seen (user never left the send-stems app) → only
+        #     rescue from Logic by falling back to the launcher; otherwise leave it.
+        # App activation only — cursor never moves; project is never saved.
+        if self.headless:
+            self._stop_focus_sampler()
             try:
                 cur = _frontmost_app_name()
-                if cur in (proc, ''):
-                    _set_app_frontmost(self._user_app)
-                    print(f'[focus] end-of-job restore -> {self._user_app!r} (was {cur!r})')
+            except Exception:
+                cur = ''
+            if self._is_real_user_app(cur):
+                print(f'[FOCUS] quit_logic: belt-and-braces SKIPPED — already on real '
+                      f'user app {cur!r}', flush=True)
+            elif self._user_app:
+                _set_app_frontmost(self._user_app)
+                print(f'[FOCUS] quit_logic: belt-and-braces RESTORED -> '
+                      f'{self._user_app!r} (was {cur!r})', flush=True)
+            elif cur in (proc, '') and self._launcher_frontmost:
+                # No real user app was ever seen → user stayed in the send-stems app;
+                # only act to avoid being stranded on Logic.
+                _set_app_frontmost(self._launcher_frontmost)
+                print(f'[FOCUS] quit_logic: belt-and-braces fell back to launcher '
+                      f'{self._launcher_frontmost!r} (was {cur!r}; no real user app seen)',
+                      flush=True)
+            else:
+                print(f'[FOCUS] quit_logic: belt-and-braces left focus as-is '
+                      f'(cur={cur!r}, no real user app tracked)', flush=True)
+            try:
+                print(f'[FOCUS] quit_logic: JOB-END frontmost = '
+                      f'{_frontmost_app_name()!r} (_user_app={self._user_app!r}, '
+                      f'launcher_frontmost={self._launcher_frontmost!r})', flush=True)
             except Exception:
                 pass
 

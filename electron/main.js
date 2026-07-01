@@ -40,8 +40,20 @@ function startPythonServer() {
     console.log('[Python] Using python3 dev server');
   }
 
+  // Tell the render backend which app names are US (the send-stems launcher) so its
+  // focus-restore never targets our own window — it must return focus to the user's
+  // real working window instead. Dev shows up as 'Electron'; a packaged build shows
+  // up as its product name / executable basename. Pass every candidate (newline-
+  // separated); the Python side also derives the parent process name as a fallback.
+  const launcherApps = new Set();
+  try { launcherApps.add(app.getName()); } catch (e) {}
+  try { launcherApps.add(path.basename(process.execPath).replace(/\.app$/i, '')); } catch (e) {}
+  if (!app.isPackaged) launcherApps.add('Electron');
+  const launcherEnv = Array.from(launcherApps).filter(Boolean).join('\n');
+  console.log('[Python] focus-exclude launcher apps:', launcherEnv.split('\n').join(', '));
+
   pythonProcess = spawn(command, args, {
-    env: { ...process.env }
+    env: { ...process.env, STEMEXPORT_LAUNCHER_APPS: launcherEnv }
   });
 
   // Line-buffer the server's stdout: chunks can split mid-line, so accumulate and
