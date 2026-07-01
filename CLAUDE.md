@@ -5,8 +5,8 @@
 macOS **Logic Pro** stem renderer (built from the FL Studio renderer, which was
 itself migrated from the original Ableton renderer).
 Electron UI → Flask backend → stem export → zip. The deliverable is two stem
-sets: `01_With_FX` (plugins on) and `03_Raw` (dry / plugins bypassed).
-`02_With_Returns_And_Master` is a documented later phase.
+sets: `01_With_FX` (plugins on) and `02_Raw` (dry / plugins bypassed).
+These are the only two sets produced — no Returns+Master set is reserved here.
 
 Logic is driven entirely through macOS accessibility automation (AppleScript /
 System Events) — there is no Logic scripting API. The one net-new file vs. the FL

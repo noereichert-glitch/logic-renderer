@@ -16,16 +16,14 @@ lifting the other DAWs needed hacks for:
 
 PASSES (current scope — wet + dry, per the user decision)
   Pass 1 → 01_With_FX   All Tracks as Audio Files, Bypass Effect Plug-ins OFF
-  Pass 2 → 03_Raw       All Tracks as Audio Files, Bypass Effect Plug-ins ON  → dry
+  Pass 2 → 02_Raw       All Tracks as Audio Files, Bypass Effect Plug-ins ON  → dry
 
-  02_With_Returns_And_Master is NOT produced yet (Logic's per-track export does
-  not fold in bus/master FX in one shot). It is stubbed empty and left as a
-  documented later phase — see docs/Logic_Renderer_Handoff_v1.md §"Open question".
+  These are the only two sets produced.
 
 SAFETY (reused, proven)
   • _validate_set       — each set must contain ≥2 WAVs (else the export was a
                           single mixdown, not per-track) → fail loudly.
-  • _assert_raw_differs — 03_Raw must differ in PCM content from 01_With_FX on at
+  • _assert_raw_differs — 02_Raw must differ in PCM content from 01_With_FX on at
                           least one stem (the "T11 guard") → proves FX were really
                           bypassed; else don't ship.
   • try/finally         — Logic is always quit, even on failure (no leaked DAW).
@@ -38,8 +36,10 @@ about format is forced from here.
 import glob
 import hashlib
 import os
+import shutil
 import struct
 import time
+import zipfile
 
 from logic_render import (
     LogicRenderBridge,
@@ -109,16 +109,16 @@ class StemExporter:
             self._validate_set(project_folder, '01_With_FX')
             self.state['progress'] = 50
 
-            # Pass 2 — 03_Raw (Bypass Effect Plug-ins ON → dry). Same Logic session.
+            # Pass 2 — 02_Raw (Bypass Effect Plug-ins ON → dry). Same Logic session.
             self._set_status('Pass 2/2 — Raw',
                              'Exporting dry stems (plugins bypassed)', progress=55)
             self._run_pass_with_retry(bridge, project_folder, project_name,
                                       bypass_fx=True, pass_label='Pass 2/2 — Raw')
             sort_wavs_into_subfolder(
-                src_folder=project_folder, subfolder_name='03_Raw',
+                src_folder=project_folder, subfolder_name='02_Raw',
                 exclude_group_wavs=False, group_track_names=[],
             )
-            self._validate_set(project_folder, '03_Raw')
+            self._validate_set(project_folder, '02_Raw')
             self.state['progress'] = 85
         finally:
             self._set_status('Closing Logic Pro…', 'Quitting cleanly')
@@ -129,7 +129,7 @@ class StemExporter:
                 print(f'[Exporter] WARNING: clean quit failed: {e}')
             print(f'[Exporter] Logic quit in {time.time()-t_quit:.1f}s.')
 
-        # T11 guard (REQUIRED): 03_Raw must differ in PCM from 01_With_FX.
+        # T11 guard (REQUIRED): 02_Raw must differ in PCM from 01_With_FX.
         self._set_status('Verifying raw pass…', 'Confirming FX were bypassed', progress=88)
         self._assert_raw_differs(project_folder)
 
@@ -137,18 +137,77 @@ class StemExporter:
         self._set_status('Zipping…', 'Packaging the sets', progress=94)
         zip_path = zip_project_folder(project_folder)
 
+        sets = {
+            '01_With_FX': sorted(glob.glob(os.path.join(project_folder, '01_With_FX', '*.wav'))),
+            '02_Raw': sorted(glob.glob(os.path.join(project_folder, '02_Raw', '*.wav'))),
+        }
+
+        # Verify the zip is a COMPLETE, valid copy BEFORE deleting the source
+        # folder — that folder holds the ONLY other copy of the stems, so the
+        # check must be solid. _verify_zip raises on any problem; if it raises we
+        # skip the delete and the failure propagates to server.py's terminal
+        # except (critical-failure notification/inbox), folder left intact.
+        self._set_status('Verifying zip…', 'Confirming the archive is complete', progress=97)
+        self._verify_zip(zip_path, sets)
+
+        # Verified → delete the source folder we just zipped, leaving only
+        # <project>.zip. We only ever remove the per-job folder we created above.
+        self._set_status('Cleaning up…', 'Removing the un-zipped stem folder', progress=99)
+        shutil.rmtree(project_folder)
+        print(f'[Exporter] Source folder removed after verified zip: {project_folder}')
+
         result = {
-            'project_folder': project_folder,
+            # Source folder is gone; point the UI's "Open Folder" at the folder
+            # that now holds the zip so it opens a real path.
+            'project_folder': self.output_folder,
             'zip_path': zip_path,
-            'sets': {
-                '01_With_FX': sorted(glob.glob(os.path.join(project_folder, '01_With_FX', '*.wav'))),
-                '02_With_Returns_And_Master': [],  # later phase — see handoff
-                '03_Raw': sorted(glob.glob(os.path.join(project_folder, '03_Raw', '*.wav'))),
-            },
+            'sets': sets,
         }
         self.state['zip_path'] = zip_path
-        self.state['project_folder'] = project_folder
+        self.state['project_folder'] = self.output_folder
         return result
+
+    # ── zip verification (must pass before deleting the only other copy) ───────
+    def _verify_zip(self, zip_path, sets):
+        """Prove <project>.zip is a complete, valid archive of the exported stems
+        BEFORE the caller deletes the source folder. Raises RuntimeError on ANY
+        failure so the caller keeps the folder and the failure surfaces.
+
+        Checks, in order:
+          1. the zip file exists and is non-zero,
+          2. it opens as a valid zip archive with no corrupt entries (CRC check),
+          3. every exported WAV from 01_With_FX + 02_Raw is present in the archive
+             under its expected path (count/paths match what was exported)."""
+        if not os.path.isfile(zip_path):
+            raise RuntimeError(f'Zip verification failed: {zip_path} was not created.')
+        if os.path.getsize(zip_path) == 0:
+            raise RuntimeError(f'Zip verification failed: {zip_path} is empty (0 bytes).')
+        if not zipfile.is_zipfile(zip_path):
+            raise RuntimeError(f'Zip verification failed: {zip_path} is not a valid zip archive.')
+
+        # Expected arcnames: relpath of each exported WAV against the zip's parent,
+        # exactly how zip_project_folder wrote its entries (relpath(full, parent)).
+        parent = os.path.dirname(os.path.abspath(zip_path))
+        expected = set()
+        for wavs in sets.values():
+            for w in wavs:
+                expected.add(os.path.relpath(os.path.abspath(w), parent))
+        if not expected:
+            raise RuntimeError('Zip verification failed: no exported stems to verify.')
+
+        with zipfile.ZipFile(zip_path) as zf:
+            bad = zf.testzip()  # returns the first corrupt entry, or None if all OK
+            if bad is not None:
+                raise RuntimeError(
+                    f'Zip verification failed: corrupt entry {bad!r} in {zip_path}.')
+            names = set(zf.namelist())
+
+        missing = sorted(expected - names)
+        if missing:
+            raise RuntimeError(
+                f'Zip verification failed: {len(missing)} of {len(expected)} expected '
+                f'stem(s) missing from the archive (e.g. {missing[:3]}). Keeping source folder.')
+        print(f'[Exporter] Zip verified: {len(expected)} stem(s) present, archive intact.')
 
     # ── one export pass, with crash-retry ─────────────────────────────────────
     def _run_pass_with_retry(self, bridge, project_folder, file_stem,
@@ -203,12 +262,12 @@ class StemExporter:
 
     # ── T11 raw-differs guard ──────────────────────────────────────────────────
     def _assert_raw_differs(self, project_folder):
-        """At least one stem present in BOTH 01_With_FX and 03_Raw must differ in
+        """At least one stem present in BOTH 01_With_FX and 02_Raw must differ in
         PCM audio content — proof the 'Bypass Effect Plug-ins' box actually took
         effect. If every shared stem is byte-identical, FX were NOT bypassed →
         raise, do not ship."""
         wet_dir = os.path.join(project_folder, '01_With_FX')
-        raw_dir = os.path.join(project_folder, '03_Raw')
+        raw_dir = os.path.join(project_folder, '02_Raw')
         wet = {os.path.basename(p): p for p in glob.glob(os.path.join(wet_dir, '*.wav'))}
         raw = {os.path.basename(p): p for p in glob.glob(os.path.join(raw_dir, '*.wav'))}
         shared = sorted(set(wet) & set(raw))
@@ -220,7 +279,7 @@ class StemExporter:
             if self._pcm_fingerprint(wet[name]) != self._pcm_fingerprint(raw[name]):
                 differs += 1
         if differs == 0:
-            raise RuntimeError('Raw guard: 03_Raw is identical to 01_With_FX on '
+            raise RuntimeError('Raw guard: 02_Raw is identical to 01_With_FX on '
                                'every shared stem — FX were NOT bypassed. Not shipping.')
         print(f'[Exporter] Raw guard OK: {differs}/{len(shared)} shared stems differ.')
 

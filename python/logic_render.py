@@ -312,6 +312,12 @@ class LogicRenderBridge:
         # DialogGuard engine (lazy-loaded once on first use, headless only).
         self._guard = None
         self._guard_loaded = False
+        # The user's genuine frontmost app, captured ONCE before Logic launches
+        # (see launch()). Threaded to every focus restore so we never rely on a
+        # mid-flight snapshot — by the time the masked chords / quit run, Logic has
+        # self-activated on project load and a fresh snapshot reads 'Logic Pro X',
+        # making the restore a no-op that strands focus on Logic. Headless only.
+        self._user_app = None
 
     # — lifecycle —
     def launch(self, project_path: str):
@@ -324,6 +330,14 @@ class LogicRenderBridge:
         focus-masking would only ever restore focus to Logic. Legacy: plain `open -a`
         (activates Logic), kept behind `if not self.headless:`."""
         resolved = resolve_project_path(project_path)
+        # Capture the user's genuine frontmost app ONCE, right here — BEFORE the
+        # `open` below starts Logic — so the end-of-job focus restore has a real
+        # target that is never Logic. Guarded on None so a post-crash relaunch()
+        # (Logic frontmost/dead by then) can't clobber it. Headless only; the
+        # legacy path leaves _user_app None and unused.
+        if self.headless and self._user_app is None:
+            self._user_app = _frontmost_app_name()
+            print(f'[focus] captured user app before launch: {self._user_app!r}')
         cmd = ['open', '-g', '-a', self.app_path, resolved] if self.headless \
             else ['open', '-a', self.app_path, resolved]
         subprocess.run(cmd, check=True)
@@ -410,6 +424,11 @@ class LogicRenderBridge:
         proc = self.process_name
         self._wait_input_idle()                 # best-effort idle gap
         prior = _frontmost_app_name()
+        # Restore to the user app captured BEFORE launch — NOT `prior`. Once Logic
+        # self-activates on load, `prior` reads 'Logic Pro X' == proc and the
+        # restore below no-ops, stranding focus on Logic. Fall back to `prior` only
+        # if the pre-launch capture is somehow unavailable.
+        restore_to = self._user_app or prior
         try:
             _set_app_frontmost(proc)
             time.sleep(0.15)
@@ -423,8 +442,8 @@ class LogicRenderBridge:
                 print(f'[masked-keys] {flick_msg}')
         finally:
             # Always hand focus back to the user's app, even if the body errored.
-            if prior and prior != proc:
-                _set_app_frontmost(prior)
+            if restore_to and restore_to != proc:
+                _set_app_frontmost(restore_to)
 
     # — the export —
     def export_stems(self, output_folder: str, file_stem: str = 'stem',
@@ -1056,6 +1075,10 @@ class LogicRenderBridge:
             # withholds the quit reply until the save prompt is answered — and we
             # only answered it AFTER that osascript timed out. ~10s pure waste/render.
             prior = _frontmost_app_name()
+            # Restore target is the pre-launch user app, not `prior` (which reads
+            # 'Logic Pro X' == proc when Logic is frontmost at quit → no-op). See
+            # _run_masked_keys.
+            restore_to = self._user_app or prior
             # Fire-and-forget — must NOT wait on this (it blocks until the prompt is
             # answered); we answer it concurrently in the poll below.
             quitter = subprocess.Popen(
@@ -1077,8 +1100,8 @@ class LogicRenderBridge:
                     # later teardown prompt pulls Logic forward again.
                     clicked_any = True
                     focus_pulled = True
-                    if prior and prior != proc:
-                        _set_app_frontmost(prior)
+                    if restore_to and restore_to != proc:
+                        _set_app_frontmost(restore_to)
                 elif not focus_pulled and _frontmost_app_name() == proc:
                     focus_pulled = True
                 time.sleep(0.05)
@@ -1094,8 +1117,8 @@ class LogicRenderBridge:
                       'any unexpected dialog untouched, escalating to terminate.')
             # Fallback restore: focus was pulled by a dialog-less frontmost flick
             # (no Don't-Save click ever landed to trigger the immediate restore above).
-            if focus_pulled and not clicked_any and prior and prior != proc:
-                _set_app_frontmost(prior)
+            if focus_pulled and not clicked_any and restore_to and restore_to != proc:
+                _set_app_frontmost(restore_to)
         else:
             # LEGACY (not headless) — UNCHANGED: polite frontmost ⌘Q, then the
             # original 0.5s Don't-Save sweep (cap 20s).
@@ -1127,6 +1150,21 @@ class LogicRenderBridge:
             time.sleep(1.5)
         if self.is_alive():
             subprocess.run(['pkill', '-9', '-x', proc], capture_output=True)
+
+        # Deterministic end-of-job focus restore (headless only). Belt-and-braces
+        # for the case where focus is STILL on Logic after quit — e.g. a Don't-Save
+        # prompt kept it frontmost and macOS didn't hand focus back on its own. Only
+        # act when focus is on Logic (or nowhere), so we never yank focus away from
+        # an app the user has since switched to. App activation only — cursor never
+        # moves; project is never saved.
+        if self.headless and self._user_app and self._user_app != proc:
+            try:
+                cur = _frontmost_app_name()
+                if cur in (proc, ''):
+                    _set_app_frontmost(self._user_app)
+                    print(f'[focus] end-of-job restore -> {self._user_app!r} (was {cur!r})')
+            except Exception:
+                pass
 
     def _click_dont_save(self) -> bool:
         """Click 'Don't Save' on any save-prompt sheet/dialog so a ⌘Q can finish

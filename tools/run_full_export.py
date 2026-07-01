@@ -4,7 +4,7 @@ run_full_export.py — Phase 1 "first green" verification harness (FULL two-pass
 
 Unlike `run_wet_export.py` (wet-only), this drives the REAL orchestrator
 `StemExporter.run()` end to end: Pass 1 `01_With_FX` (bypass off) → Pass 2
-`03_Raw` (bypass on) → T11 `_assert_raw_differs` guard → zip. It then prints a
+`02_Raw` (bypass on) → T11 `_assert_raw_differs` guard → zip. It then prints a
 per-stem WAV report for both sets and verifies the `.logicx` project was left
 byte-identical (never saved).
 
@@ -146,7 +146,7 @@ def main():
 
     project_folder = result['project_folder']
     print_wav_report('01_With_FX', os.path.join(project_folder, '01_With_FX'))
-    print_wav_report('03_Raw', os.path.join(project_folder, '03_Raw'))
+    print_wav_report('02_Raw', os.path.join(project_folder, '02_Raw'))
 
     print(f'\n[full] zip = {result["zip_path"]}'
           f'  ({os.path.getsize(result["zip_path"])} bytes)')
@@ -156,10 +156,10 @@ def main():
 
     # Summary verdict.
     fx = result['sets']['01_With_FX']
-    raw = result['sets']['03_Raw']
+    raw = result['sets']['02_Raw']
     print('\n=== SUMMARY ===')
     print(f'  01_With_FX stems : {len(fx)}  (need ≥2)')
-    print(f'  03_Raw stems     : {len(raw)}  (need ≥2)')
+    print(f'  02_Raw stems     : {len(raw)}  (need ≥2)')
     print(f'  zip built        : {os.path.isfile(result["zip_path"])}')
     print(f'  project untouched: {untouched}')
     ok = len(fx) >= 2 and len(raw) >= 2 and os.path.isfile(result['zip_path']) and untouched

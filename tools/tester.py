@@ -50,7 +50,7 @@ STATUS_PATH = REPO_ROOT / "STATUS.md"
 POLL_INTERVAL = 1.0       # seconds between progress polls
 EXPORT_TIMEOUT = 30 * 60  # max wall time for one export (sec)
 
-EXPECTED_SUBFOLDERS = ("01_With_FX", "02_With_Returns_And_Master", "03_Raw")
+EXPECTED_SUBFOLDERS = ("01_With_FX", "02_Raw")
 
 
 # -- HTTP helpers (stdlib only -- no `requests` dependency) -------------------
@@ -350,7 +350,7 @@ def main():
                 raw_map = {
                     os.path.basename(n): n
                     for n in names
-                    if "/03_Raw/" in n and n.lower().endswith(".wav")
+                    if "/02_Raw/" in n and n.lower().endswith(".wav")
                 }
                 fx_map = {
                     os.path.basename(n): n
@@ -361,7 +361,7 @@ def main():
                 if not shared:
                     rep.note(
                         "content-diff guard skipped: no same-named WAV pairs across "
-                        "03_Raw and 01_With_FX to compare"
+                        "02_Raw and 01_With_FX to compare"
                     )
                 else:
                     identical = [
@@ -372,7 +372,7 @@ def main():
                     differing = [b for b in shared if b not in identical]
                     if differing:
                         rep.check(
-                            "03_Raw differs from 01_With_FX on at least one stem",
+                            "02_Raw differs from 01_With_FX on at least one stem",
                             True,
                             f"{len(differing)} of {len(shared)} pair(s) differ "
                             "(bypass applied)",
@@ -380,13 +380,13 @@ def main():
                         if identical:
                             rep.note(
                                 f"{len(identical)} stem(s) byte-identical across "
-                                "03_Raw and 01_With_FX — expected for tracks with "
+                                "02_Raw and 01_With_FX — expected for tracks with "
                                 "no devices of their own (e.g. FX only on a parent "
                                 f"group): {', '.join(identical)}"
                             )
                     else:
                         rep.check(
-                            "03_Raw differs from 01_With_FX on at least one stem",
+                            "02_Raw differs from 01_With_FX on at least one stem",
                             False,
                             f"[FAIL] all {len(shared)} shared stem(s) are "
                             "byte-identical to 01_With_FX — bypass did NOT apply "
@@ -394,7 +394,7 @@ def main():
                         )
         except Exception as e:
             rep.check(
-                "03_Raw is meaningfully different from 01_With_FX",
+                "02_Raw is meaningfully different from 01_With_FX",
                 False,
                 f"content-diff check errored: {e}",
             )

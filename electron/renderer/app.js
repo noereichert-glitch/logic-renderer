@@ -197,8 +197,7 @@ async function startExport() {
 // ── Done screen ──────────────────────────────────────────────────────────────
 const SET_LABEL = {
   '01_With_FX': 'With FX',
-  '02_With_Returns_And_Master': 'Returns + Master',
-  '03_Raw': 'Raw (devices bypassed)',
+  '02_Raw': 'Raw (devices bypassed)',
   '_flat': 'Stems',
 };
 
@@ -209,7 +208,7 @@ function countSets(sets) {
 }
 
 function showDoneScreen(sets, projectFolder, zipPath, fromHistory = false) {
-  const orderedKeys = ['01_With_FX', '02_With_Returns_And_Master', '03_Raw'];
+  const orderedKeys = ['01_With_FX', '02_Raw'];
   const presentKeys = orderedKeys.filter(k => sets[k]);
   const extraKeys = Object.keys(sets).filter(k => !orderedKeys.includes(k));
   const keys = [...presentKeys, ...extraKeys];

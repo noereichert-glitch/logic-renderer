@@ -172,7 +172,7 @@ def folder_stems():
     if not folder or not os.path.exists(folder):
         return jsonify({'error': 'Folder not found'}), 400
     sets = {}
-    for sub in ('01_With_FX', '02_With_Returns_And_Master', '03_Raw'):
+    for sub in ('01_With_FX', '02_Raw'):
         path = os.path.join(folder, sub)
         if os.path.isdir(path):
             sets[sub] = sorted(glob.glob(os.path.join(path, '*.wav')))
