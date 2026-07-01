@@ -328,6 +328,12 @@ class LogicRenderBridge:
         self._launcher_frontmost = None
         self._focus_sampler = None
         self._focus_sampler_stop = None
+        # Scan-timing (headless only, inert): accumulates the wall-cost of the
+        # per-tick DialogGuard scans in wait_for_logic_ready + wait_for_export_complete
+        # so a run can report ms/scan + total overhead. Pure measurement — changes no
+        # behaviour. See _timed_handle_dialogs / _scan_report.
+        self._scan_count = 0
+        self._scan_ms_total = 0.0
 
     # — focus tracking (headless only) —
     def _detect_launcher_apps(self) -> set:
@@ -402,6 +408,28 @@ class LogicRenderBridge:
         if self._focus_sampler_stop is not None:
             self._focus_sampler_stop.set()
         self._focus_sampler = None
+
+    # — scan-timing (headless only, inert) —
+    def _timed_handle_dialogs(self, context=None):
+        """Wrap one per-tick DialogGuard scan and accumulate its wall-cost. Behaves
+        EXACTLY like _handle_dialogs (same return value; a DialogGuardPause still
+        propagates) — the finally records timing on both the normal and raise paths."""
+        t0 = time.time()
+        try:
+            return self._handle_dialogs(context)
+        finally:
+            self._scan_count += 1
+            self._scan_ms_total += (time.time() - t0) * 1000.0
+
+    def _scan_report(self, phase: str) -> dict:
+        """Emit + return the cumulative dialog-scan overhead so the run can report
+        ms/scan + total. Printed to stdout → visible in the `npm start` terminal."""
+        n = self._scan_count
+        total = self._scan_ms_total
+        avg = (total / n) if n else 0.0
+        print(f'[SCAN] {phase}: dialog-scan ticks={n} total={total:.0f}ms '
+              f'avg={avg:.1f}ms/scan', flush=True)
+        return {'ticks': n, 'total_ms': round(total, 1), 'avg_ms': round(avg, 2)}
 
     # — lifecycle —
     def launch(self, project_path: str):
@@ -487,10 +515,12 @@ class LogicRenderBridge:
             # (unknown/terminal dialog) propagates and aborts the wait instead of
             # being swallowed. Transient scan errors are handled inside _handle_dialogs.
             if self.headless:
-                self._handle_dialogs()
+                self._timed_handle_dialogs()
             try:
                 if _osascript(script, timeout=10) == 'ready':
                     time.sleep(settle)
+                    if self.headless:
+                        self._scan_report('load')
                     return self.is_alive()
             except Exception:
                 pass
@@ -1130,7 +1160,7 @@ class LogicRenderBridge:
             # transient scan errors and returns [] when nothing blocks, so a healthy
             # bounce (no AXDialog/sheet) is untouched. Legacy path never calls this.
             if self.headless:
-                self._handle_dialogs()
+                self._timed_handle_dialogs()
             snap = {}
             try:
                 for name in os.listdir(output_folder):
@@ -1147,6 +1177,8 @@ class LogicRenderBridge:
             if saw_files and snap == last and snap and all(v > 0 for v in snap.values()):
                 stable += 1
                 if stable >= required_stable:
+                    if self.headless:
+                        self._scan_report('export')
                     return
             else:
                 stable = 0

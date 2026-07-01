@@ -147,6 +147,10 @@ class PostExportScanTests(unittest.TestCase):
         self.b._click_dialog_button = lambda label: (self.clicks.append(label) or True)
         self.b._active_locale = lambda: 'en'
         self.b.is_alive = lambda: True
+        # wait_for_export_complete now records inert dialog-scan timing; this
+        # __new__-built fixture bypasses __init__, so provide the counters it uses.
+        self.b._scan_count = 0
+        self.b._scan_ms_total = 0.0
         self.tmp = tempfile.mkdtemp()
 
     def tearDown(self):
