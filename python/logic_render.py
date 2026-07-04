@@ -256,6 +256,10 @@ class LogicRenderBridge:
             return "no"
         end tell'''
         while time.time() < end:
+            # Clear the launch-time audio-device alert first: it's a modal that
+            # blocks the project window from ever reporting "ready". No-op when
+            # the alert isn't present.
+            self._dismiss_audio_device_alert()
             try:
                 if _osascript(script, timeout=10) == 'ready':
                     time.sleep(settle)
@@ -287,9 +291,11 @@ class LogicRenderBridge:
         os.makedirs(output_folder, exist_ok=True)
         proc = self.process_name
 
-        # Defensive: clear a modal "Key Command Assignment Conflicts" sheet that can
-        # block the main window before we try to open the Export menu.
+        # Defensive: clear modals that can block the menu bar before we open the
+        # Export menu — the "Key Command Assignment Conflicts" sheet and Logic's
+        # launch-time "audio interface not available" alert.
         self._dismiss_conflict_sheet()
+        self._dismiss_audio_device_alert()
 
         # 1. Open the export dialog.
         _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
@@ -463,6 +469,35 @@ class LogicRenderBridge:
                         end repeat
                     end repeat
                 end if
+            end tell''', timeout=10)
+        except Exception:
+            pass
+
+    def _dismiss_audio_device_alert(self):
+        """Dismiss Logic's launch-time audio-hardware alert so it can't block the
+        menu bar and stall the export. When the saved audio interface is missing
+        (an unplugged interface, or the DEFAULT case on a headless render box),
+        Logic shows a modal alert during audio-engine init offering to fall back to
+        a default device. Clicking OK accepts the fallback and lets the project
+        finish loading — fine for us: we bounce OFFLINE, so no physical output is
+        needed. Best-effort, non-fatal (mirrors _dismiss_conflict_sheet).
+
+        Discovered live (tools/audio_alert_probe.py): a nameless AXDialog window,
+        buttons "OK" / "Open Settings", text "The last selected audio interface is
+        not available. …". We click OK; at launch it is the only AXDialog present.
+        """
+        try:
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                repeat with w in windows
+                    if (subrole of w as text) is "AXDialog" then
+                        repeat with b in buttons of w
+                            if (name of b) is "OK" then
+                                click b
+                                return
+                            end if
+                        end repeat
+                    end if
+                end repeat
             end tell''', timeout=10)
         except Exception:
             pass
