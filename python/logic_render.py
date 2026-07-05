@@ -648,8 +648,30 @@ class LogicRenderBridge:
         # logic is identical for both modes, so it's built once and reused. The
         # range root-cause note is preserved from Phase 1.
         controls_body = f'''
-            -- File Format → WAVE (find the pop-up whose value is a format option).
-            repeat with p in (every pop up button of w)
+            -- Logic 11 nests these accessory controls inside groups/scroll areas
+            -- (Logic 10 had them as direct children of the panel — see
+            -- tools/export_dialog_probe.py / docs). Addressing them "of w" fails
+            -- with -1728, so collect them ONCE from the window's flattened
+            -- `entire contents` and match by value/name — version-agnostic.
+            set allEls to entire contents of w
+            set popups to {{}}
+            set bypassCb to missing value
+            set exportBtn to missing value
+            repeat with p in allEls
+                try
+                    set c to class of p
+                    if c is pop up button then
+                        set end of popups to p
+                    else if c is checkbox then
+                        if (name of p) is "Bypass Effect Plug-ins" then set bypassCb to p
+                    else if c is button then
+                        if (name of p) is "Export" then set exportBtn to p
+                    end if
+                end try
+            end repeat
+
+            -- File Format → WAVE (pop-up whose value is a format option).
+            repeat with p in popups
                 set v to ""
                 try
                     set v to (value of p) as text
@@ -666,14 +688,15 @@ class LogicRenderBridge:
             end repeat
 
             -- Bypass Effect Plug-ins → desired (read value, click only if differs).
-            set cb to checkbox "Bypass Effect Plug-ins" of w
-            if (value of cb as integer) is not {desired_bypass} then
-                click cb
-                delay 0.2
+            if bypassCb is not missing value then
+                if (value of bypassCb as integer) is not {desired_bypass} then
+                    click bypassCb
+                    delay 0.2
+                end if
             end if
 
-            -- Normalize → Off (find the pop-up whose value is a normalize option).
-            repeat with p in (every pop up button of w)
+            -- Normalize → Off (pop-up whose value is a normalize option).
+            repeat with p in popups
                 set v to ""
                 try
                     set v to (value of p) as text
@@ -689,15 +712,12 @@ class LogicRenderBridge:
                 end if
             end repeat
 
-            -- Range/silence pop-up (#2) → "Trim Silence at File End" (full song,
-            -- bar 1 → last clip). ROOT-CAUSE FIX: set it explicitly every export so
-            -- we never inherit Logic's sticky last value (which caused mid-project
-            -- starts). Found by value-membership in the range option set (the three
-            -- option sets — format/normalize/range — are disjoint, so no cross-match).
-            -- Fallback if value-membership ever proves ambiguous: it is positionally
-            -- "pop up button 2 of w" (as used by tools/range_discovery.py →
-            -- export_with_range_mode).
-            repeat with p in (every pop up button of w)
+            -- Range/silence pop-up → "Trim Silence at File End" (full song, bar 1 →
+            -- last clip). ROOT-CAUSE FIX: set it explicitly every export so we never
+            -- inherit Logic's sticky last value (which caused mid-project starts).
+            -- Found by value-membership in the range option set (the three option
+            -- sets — format/normalize/range — are disjoint, so no cross-match).
+            repeat with p in popups
                 set v to ""
                 try
                     set v to (value of p) as text
@@ -714,7 +734,11 @@ class LogicRenderBridge:
             end repeat
 
             -- Go.
-            click button "Export" of w'''
+            if exportBtn is not missing value then
+                click exportBtn
+            else
+                click button "Export" of w
+            end if'''
 
         # The destination path field lives ONLY inside the ⌘⇧G "Go to Folder" sheet
         # (window "Open" has no path field — just a search field + the "Where:"
@@ -741,17 +765,32 @@ class LogicRenderBridge:
             # returns a marker string when a fallback fires so _run_masked_keys can
             # log it.
             self._run_masked_keys(f'''
-                keystroke "g" using {{command down, shift down}}
-                -- Poll for the Go-to-Folder sheet to APPEAR (was: delay 0.5).
+                -- ⌘⇧G with ACTIVATION RETRY: the chord only lands if Logic's
+                -- activation actually completed — a fixed 0.15s settle after
+                -- `set frontmost` proved racy (the chord fired into the void and
+                -- the sheet never appeared → -1719 on the sheet write below).
+                -- Each attempt re-asserts frontmost, raises the export window,
+                -- sends the chord, then polls for the sheet; up to 3 attempts.
+                set attempts to 0
                 set fb1 to true
-                repeat 60 times
+                repeat while fb1 and attempts < 3
+                    set attempts to attempts + 1
+                    set frontmost to true
                     try
-                        if (exists text field 1 of sheet 1 of w) then
-                            set fb1 to false
-                            exit repeat
-                        end if
+                        perform action "AXRaise" of w
                     end try
-                    delay 0.05
+                    delay 0.2
+                    keystroke "g" using {{command down, shift down}}
+                    -- Poll for the Go-to-Folder sheet to APPEAR (was: delay 0.5).
+                    repeat 60 times
+                        try
+                            if (exists text field 1 of sheet 1 of w) then
+                                set fb1 to false
+                                exit repeat
+                            end if
+                        end try
+                        delay 0.05
+                    end repeat
                 end repeat
                 if fb1 then delay 0.5
                 set value of text field 1 of sheet 1 of w to "{_as_str(output_folder)}"
@@ -770,7 +809,8 @@ class LogicRenderBridge:
                 end repeat
                 if fb2 then delay 0.8
                 set flickMsg to ""
-                if fb1 then set flickMsg to flickMsg & "FALLBACK sheet-appear poll timed out (~3s) -> used delay 0.5; "
+                if fb1 then set flickMsg to flickMsg & "FALLBACK sheet-appear poll timed out on all " & (attempts as text) & " attempts -> used delay 0.5; "
+                if (not fb1) and attempts > 1 then set flickMsg to flickMsg & "RETRY: Go-to sheet appeared on attempt " & (attempts as text) & "; "
                 if fb2 then set flickMsg to flickMsg & "FALLBACK sheet-gone poll timed out (~3s) -> used delay 0.8; "
                 return flickMsg''')
             # Controls + Export click — the single `controls_body` osascript.
