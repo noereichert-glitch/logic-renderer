@@ -52,6 +52,11 @@ from one_click_helpers import (
     zip_project_folder,
 )
 
+# Appended to every 02_Raw stem's filename during the post-pass sort
+# ('Kick.wav' -> 'Kick_raw.wav'). The T11 raw-differs guard strips it again to
+# pair raw stems with their 01_With_FX counterparts.
+RAW_FILENAME_SUFFIX = '_raw'
+
 # How many times to retry a single pass if Logic crashes mid-export. This is for
 # transient crashes — a plugin that deterministically crashes Logic will burn all
 # attempts and still fail, which is intentional.
@@ -117,6 +122,7 @@ class StemExporter:
             sort_wavs_into_subfolder(
                 src_folder=project_folder, subfolder_name='02_Raw',
                 exclude_group_wavs=False, group_track_names=[],
+                filename_suffix=RAW_FILENAME_SUFFIX,
             )
             self._validate_set(project_folder, '02_Raw')
             self.state['progress'] = 85
@@ -269,7 +275,14 @@ class StemExporter:
         wet_dir = os.path.join(project_folder, '01_With_FX')
         raw_dir = os.path.join(project_folder, '02_Raw')
         wet = {os.path.basename(p): p for p in glob.glob(os.path.join(wet_dir, '*.wav'))}
-        raw = {os.path.basename(p): p for p in glob.glob(os.path.join(raw_dir, '*.wav'))}
+        # Raw stems carry RAW_FILENAME_SUFFIX ('Kick_raw.wav'); strip it so they
+        # pair with their 01_With_FX counterparts ('Kick.wav').
+        raw = {}
+        for p in glob.glob(os.path.join(raw_dir, '*.wav')):
+            base, ext = os.path.splitext(os.path.basename(p))
+            if base.endswith(RAW_FILENAME_SUFFIX):
+                base = base[:-len(RAW_FILENAME_SUFFIX)]
+            raw[base + ext] = p
         shared = sorted(set(wet) & set(raw))
         if not shared:
             raise RuntimeError('Raw guard: no stems with matching names in both '

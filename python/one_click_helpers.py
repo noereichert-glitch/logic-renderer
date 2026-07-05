@@ -128,12 +128,15 @@ def sort_wavs_into_subfolder(
     subfolder_name: str,
     exclude_group_wavs: bool,
     group_track_names: Iterable[str],
+    filename_suffix: str = '',
 ) -> list:
     """
     Move all .wav files currently in src_folder into src_folder/subfolder_name/.
     If exclude_group_wavs is True, delete (don't move) WAVs whose filename matches
     a known group track name — those are the group submixes and aren't wanted in
-    this set. Returns the list of WAV paths that ended up in the subfolder.
+    this set. If filename_suffix is set, it is appended to each filename's stem
+    during the move (e.g. 'Kick.wav' -> 'Kick_raw.wav' for the 02_Raw set).
+    Returns the list of WAV paths that ended up in the subfolder.
     """
     dest_folder = os.path.join(src_folder, subfolder_name)
     os.makedirs(dest_folder, exist_ok=True)
@@ -153,7 +156,10 @@ def sort_wavs_into_subfolder(
             except Exception as e:
                 print(f'[OneClick] Could not remove {entry}: {e}')
             continue
-        dest_path = os.path.join(dest_folder, entry)
+        dest_name = entry
+        if filename_suffix:
+            dest_name = stem_name + filename_suffix + os.path.splitext(entry)[1]
+        dest_path = os.path.join(dest_folder, dest_name)
         try:
             shutil.move(full, dest_path)
             kept.append(dest_path)
