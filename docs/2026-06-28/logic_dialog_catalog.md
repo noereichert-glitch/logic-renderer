@@ -203,6 +203,21 @@ entry above only after it is actually observed.
 - **Class:** safe dismiss — click `OK` or the `Use …` button, **never** `Open
   Settings`. Same handling as entry #1; included so the rule matches both wordings.
 
+### C10 — Auto-save recovery prompt at load (live capture 2026-07-22)
+- **Body:** `Logic Pro has auto-saved a version of project “%@”. Do you want to
+  open the auto-saved version from %@, or the last version you saved %@?` —
+  nameless free `AXDialog`, appears at project load after a previous session of
+  this project ended without a clean quit (e.g. a crashed/aborted render).
+  **Buttons:** `Saved` / `Auto-saved`.
+- **Class:** safe dismiss — **click `Saved`** (rule `autosave_recovery`); the render
+  must always reflect the project **as last saved**. `Auto-saved` is on the
+  never-click list: rendering a crash-recovery state is the one wrong choice here.
+- **Trade-off (deliberate):** if real unsaved work exists only in the auto-save,
+  it is NOT rendered. Milder sibling of C8: choosing `Saved` merely opens the
+  saved file — unlike C8's `Recover`/`Revert`, it destroys nothing on disk.
+- Found live: three consecutive daemon jobs failed fail-safe on this dialog after
+  a disk-full crash mid-export left an auto-save marker in the project copy.
+
 ---
 
 # Seed `dialog_rules` (draft schema for the future DialogGuard to load)

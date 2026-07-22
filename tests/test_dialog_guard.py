@@ -225,6 +225,25 @@ class DialogGuardTests(unittest.TestCase):
         self.assertEqual(d.action, Decision.CLICK)
         self.assertEqual(d.rule_id, 'save_changes_on_quit')
 
+    # ================ C10 — auto-save recovery prompt at load ================
+    def test_C10_autosave_clicks_Saved(self):
+        # Live capture 2026-07-22: nameless dialog after a crashed render.
+        b = ('Logic Pro has auto-saved a version of project “Gamabunta”. Do you '
+             'want to open the auto-saved version from 22/07/2026, 13:34, or the '
+             'last version you saved 05/07/2026, 18:42?')
+        d = self.g.decide(self.dlg(b, ['Saved', 'Auto-saved']), 'en')
+        self.assertClick(d, 'Saved')
+        self.assertEqual(d.rule_id, 'autosave_recovery')
+
+    def test_C10_autosave_never_clicks_Autosaved_when_Saved_missing(self):
+        # Only the recovery button present -> Saved absent, Auto-saved is
+        # never_click -> PAUSE (never render a crash-recovery state).
+        b = ('Logic Pro has auto-saved a version of project “Gamabunta”. Do you '
+             'want to open the auto-saved version from 22/07/2026, 13:34, or the '
+             'last version you saved 05/07/2026, 18:42?')
+        d = self.g.decide(self.dlg(b, ['Auto-saved']), 'en')
+        self.assertPause(d)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

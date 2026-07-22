@@ -22,6 +22,7 @@ never_click_literals:
 - Don’t Reopen
 - Move to Trash
 - Discard
+- Auto-saved
 # Friendly fallback shown to the client when a blocking dialog matches NO rule
 # (fail-safe PAUSE). Plain-language + actionable; the engine attaches it to the
 # Decision, which the notification layer surfaces as the failure reason.
@@ -117,6 +118,14 @@ rules:
   user_message: "This project's data was damaged and Logic loaded a backup. Open it in Logic to check everything's correct, then try again."
   body_keys:
   - The data for the chosen alternative is corrupt. The backup from %@ has been used instead.
+- id: autosave_recovery
+  action: dismiss_safe
+  user_message: "Logic offered a crash-recovery version at load; the render chose your last saved version, so it reflects the project as you last saved it."
+  note: 'renders the LAST SAVED state by design; unsaved work living only in an auto-save is deliberately not rendered (catalog C10). Auto-saved is never_click.'
+  click_keys:
+  - Saved
+  body_keys:
+  - '^P has auto-saved a version of project “%@”. Do you want to open the auto-saved version from %@, or the last version you saved'
 localizations:
   OK:
     en: OK
@@ -158,6 +167,8 @@ localizations:
     ja: 保存
     ko: 저장
     zh_CN: 存储
+  Saved:
+    en: Saved
   Delete:
     en: Delete
     de: Löschen
