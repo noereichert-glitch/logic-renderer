@@ -3,167 +3,109 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>StemExport</title>
+  <title>stemma</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="titlebar"></div>
+<div id="window">
 
-  <div id="app">
+  <!-- titlebar: draggable; native traffic lights sit in the reserved left inset -->
+  <div class="titlebar">
+    <div class="wordmark">stemma <em>/ Audio Fuego</em></div>
+    <div class="sync-pill" id="health-pill">
+      <span class="sync-dot" id="health-dot"></span><span id="health-label">Checking renderer…</span>
+    </div>
+  </div>
 
-    <!-- SIDEBAR -->
-    <aside class="sidebar">
-      <div class="logo">
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-          <rect x="2" y="6" width="4" height="16" rx="2" fill="#00ff88"/>
-          <rect x="8" y="2" width="4" height="24" rx="2" fill="#00ff88" opacity="0.7"/>
-          <rect x="14" y="8" width="4" height="12" rx="2" fill="#00ff88" opacity="0.5"/>
-          <rect x="20" y="4" width="4" height="20" rx="2" fill="#00ff88" opacity="0.3"/>
-        </svg>
-        <span>StemExport</span>
+  <div class="body">
+
+    <!-- left rail -->
+    <div class="rail">
+      <div class="tab active" data-screen="projects">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.5 4a1.5 1.5 0 0 1 1.5-1.5h3l1.5 2h5.5A1.5 1.5 0 0 1 14.5 6v6A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V4z" stroke="currentColor" stroke-width="1.3"/></svg>
+        Projects <span class="count" id="count-projects">0</span>
+      </div>
+      <div class="tab" data-screen="history">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.5V8l2.3 2.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        History <span class="count" id="count-history">0</span>
+      </div>
+      <div class="tab" data-screen="inbox">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.5 8h4l1 2h3l1-2h4M2.5 3.5h11l1 4.5v4A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V8l1-4.5z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Inbox <span class="count" id="count-inbox">0</span>
       </div>
 
-      <nav>
-        <button class="nav-btn active" data-screen="export">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M4 7l4 4 4-4M2 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          Export
-        </button>
-        <button class="nav-btn" data-screen="history">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          History
-        </button>
-        <button class="nav-btn" data-screen="inbox">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12v8H2V4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 4l6 4.5L14 4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          Inbox
-        </button>
-      </nav>
-
-      <div class="sidebar-footer">
-        <span class="version">v1.0 One-Click</span>
+      <div class="footer">
+        <div class="storage-label"><span>Output folder</span></div>
+        <div class="output-row">
+          <div class="output-path" id="output-path-display">Not set</div>
+          <button class="btn-mini" id="btn-pick-folder">Choose…</button>
+        </div>
       </div>
-    </aside>
+    </div>
 
-    <!-- MAIN CONTENT -->
-    <main class="main">
+    <div class="main">
 
-      <!-- EXPORT SCREEN -->
-      <div id="screen-export" class="screen active">
-
-        <!-- Main step: drop + folder + one button -->
-        <div id="step-main" class="step active">
-          <div class="step-header">
-            <div class="step-num">01</div>
-            <div>
-              <h2>Stem Export</h2>
-              <p class="step-sub">Drop your Logic Pro project. One click. Wet + dry stem sets, zipped.</p>
-            </div>
+      <!-- PROJECTS (library) SCREEN -->
+      <div id="screen-projects" class="screen active">
+        <div class="toolbar">
+          <div class="crumbs">
+            <span class="root">stemma</span><span class="sep">/</span><span class="here">Projects</span>
           </div>
-
-          <div id="drop-zone" class="drop-zone">
-            <div class="drop-inner">
-              <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                <path d="M24 8v24M14 22l10 10 10-10" stroke="#00ff88" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M8 36h32" stroke="#00ff88" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
-              </svg>
-              <p class="drop-title">Drop .logicx project here</p>
-              <p class="drop-sub">or <button class="link-btn" id="btn-browse">browse files</button></p>
-            </div>
-          </div>
-          <div id="file-info" class="file-info hidden">
-            <div class="file-icon">
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 2h8l4 4v12H4V2z" stroke="#00ff88" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 2v4h4" stroke="#00ff88" stroke-width="1.5" stroke-linejoin="round"/></svg>
-            </div>
-            <div class="file-details">
-              <span id="file-name" class="file-name">project.logicx</span>
-              <span id="track-count" class="file-meta">Parsing…</span>
-            </div>
-            <button class="icon-btn" id="btn-clear-file" title="Remove">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-            </button>
-          </div>
-
-          <div class="setting-group">
-            <label class="setting-label">Output Folder</label>
-            <div class="folder-row">
-              <div class="folder-path" id="output-path-display">No folder selected</div>
-              <button class="btn-outline" id="btn-pick-folder">Choose…</button>
-            </div>
-          </div>
-
-          <div class="step-actions">
-            <button class="btn-primary" id="btn-start-export" disabled>Stem Export</button>
-          </div>
+          <div class="spacer"></div>
+          <select class="select" id="daw-filter">
+            <option value="all">All DAWs</option>
+            <option value="logicx">Logic Pro</option>
+            <option value="als">Ableton Live</option>
+          </select>
+          <button class="btn-select" id="btn-add-projects">+ Add Projects</button>
+          <button class="btn-primary" id="btn-render-all">
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M3 2.5l8 4.5-8 4.5v-9z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            Render All
+          </button>
         </div>
 
-        <!-- Exporting step (reused from v10) -->
-        <div id="step-exporting" class="step">
-          <div class="export-center">
-            <div class="export-animation">
-              <div class="waveform-bars">
-                <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-                <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-                <div class="bar"></div><div class="bar"></div>
-              </div>
-            </div>
-            <h2 id="export-status-title">Launching Logic Pro…</h2>
-            <p id="export-status-sub" class="export-sub">Running silently in the background</p>
-            <div class="progress-bar-wrap">
-              <div class="progress-bar" id="export-progress-bar"></div>
-            </div>
-            <p id="export-track-label" class="export-track-label"></p>
-          </div>
+        <div class="cols"><span>Name</span><span>Size</span><span>Modified</span><span>Status</span><span></span></div>
+
+        <div class="list" id="library-list">
+          <div class="empty-state">Your library is empty. Add sessions with “+ Add Projects” —
+            they stay in place on disk; stemma only remembers where they live.</div>
         </div>
 
-        <!-- Done step: three-set summary + zip + folder actions -->
-        <div id="step-done" class="step">
-          <div class="done-header">
-            <div class="done-check">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L19 7" stroke="#00ff88" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </div>
-            <div>
-              <h2>Export complete</h2>
-              <p class="step-sub" id="done-subtitle">Three stem sets packaged</p>
-            </div>
-            <button class="btn-outline" id="btn-open-zip">Show .zip in Finder</button>
-          </div>
-
-          <div class="stem-list" id="set-summary-list">
-            <!-- Populated by JS — one row per set -->
-          </div>
-
-          <div class="step-actions">
-            <button class="btn-secondary" id="btn-open-folder">Open project folder</button>
-            <button class="btn-secondary" id="btn-new-export">New Export</button>
+        <div class="footstrip">
+          <span id="foot-summary">0 projects</span>
+          <div class="upload-progress" id="foot-progress" style="display:none">
+            <span id="foot-progress-label"></span>
+            <div class="up-bar"><i id="foot-progress-bar" style="width:0%"></i></div>
           </div>
         </div>
-
-      </div><!-- /screen-export -->
+      </div>
 
       <!-- HISTORY SCREEN -->
       <div id="screen-history" class="screen">
         <div class="screen-header">
-          <h2>Session History</h2>
-          <button class="btn-outline btn-sm" id="btn-clear-history">Clear All</button>
+          <h2>Render History</h2>
+          <button class="btn-select btn-sm" id="btn-clear-history">Clear All</button>
         </div>
         <div id="history-list" class="history-list">
-          <div class="empty-state">No exports yet. Start by dropping a .logicx project.</div>
+          <div class="empty-state">No renders yet.</div>
         </div>
       </div>
 
       <!-- INBOX SCREEN (critically-failed renders) -->
       <div id="screen-inbox" class="screen">
         <div class="screen-header">
-          <h2>Messages</h2>
-          <button class="btn-outline btn-sm" id="btn-clear-inbox">Clear All</button>
+          <h2>Inbox</h2>
+          <button class="btn-select btn-sm" id="btn-clear-inbox">Clear All</button>
         </div>
         <div id="inbox-list" class="history-list">
           <div class="empty-state">No messages. Failed renders will appear here.</div>
         </div>
       </div>
 
-    </main>
+    </div>
   </div>
+</div>
 
-  <script src="app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

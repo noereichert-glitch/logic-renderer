@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const fs = require('fs');
+const { spawn, execFile } = require('child_process');
 const Store = require('electron-store');
 
 const store = new Store();
@@ -192,4 +193,63 @@ ipcMain.handle('inbox:get', () => {
 ipcMain.handle('inbox:clear', () => {
   store.set('messages', []);
   return [];
+});
+
+// ── Project library ──────────────────────────────────────────────────────────
+// The library is a list of ABSOLUTE PATHS to sessions in their normal locations
+// (never copied or moved). Entries: {id, path, name, ext, addedAt}. The renderer
+// owns list order/content; main just persists it and answers filesystem queries.
+
+ipcMain.handle('library:get', () => {
+  return store.get('library', []);
+});
+
+ipcMain.handle('library:save', (event, entries) => {
+  store.set('library', entries);
+  return entries;
+});
+
+// Multi-select picker for library additions. openFile+openDirectory so both a
+// .logicx package and a folder-style project can be chosen (same reasoning as
+// dialog:openProject); .als is a plain file.
+ipcMain.handle('dialog:addProjects', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    filters: [{ name: 'DAW Project', extensions: ['logicx', 'als'] }],
+    properties: ['openFile', 'openDirectory', 'multiSelections']
+  });
+  return result.canceled ? [] : result.filePaths;
+});
+
+// Batch stats for library rows: exists + mtime from fs, on-disk size via one
+// `du -sk` call (a .logicx package is a directory — fs.stat can't size it).
+ipcMain.handle('library:stats', async (event, paths) => {
+  const out = {};
+  const existing = [];
+  for (const p of paths) {
+    try {
+      const st = fs.statSync(p);
+      out[p] = { exists: true, mtimeMs: st.mtimeMs, sizeBytes: null };
+      existing.push(p);
+    } catch (e) {
+      out[p] = { exists: false, mtimeMs: null, sizeBytes: null };
+    }
+  }
+  if (existing.length) {
+    try {
+      const sizes = await new Promise((resolve) => {
+        execFile('du', ['-sk', ...existing], { maxBuffer: 1024 * 1024 }, (err, stdout) => {
+          // du exits non-zero on permission holes but still prints what it
+          // measured — use stdout regardless.
+          resolve(stdout || '');
+        });
+      });
+      for (const line of sizes.split('\n')) {
+        const m = line.match(/^(\d+)\t(.+)$/);
+        if (m && out[m[2]]) out[m[2]].sizeBytes = parseInt(m[1], 10) * 1024;
+      }
+    } catch (e) {
+      console.error('[Library] du failed:', e);
+    }
+  }
+  return out;
 });

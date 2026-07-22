@@ -10,4 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   getInbox: () => ipcRenderer.invoke('inbox:get'),
   clearInbox: () => ipcRenderer.invoke('inbox:clear'),
+  getLibrary: () => ipcRenderer.invoke('library:get'),
+  saveLibrary: (entries) => ipcRenderer.invoke('library:save', entries),
+  addProjects: () => ipcRenderer.invoke('dialog:addProjects'),
+  libraryStats: (paths) => ipcRenderer.invoke('library:stats', paths),
 });
