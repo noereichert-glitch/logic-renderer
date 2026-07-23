@@ -165,7 +165,7 @@ ipcMain.handle('shell:openFolder', async (event, folderPath) => {
 
 // Reveal a specific file (e.g. the .zip) in Finder rather than opening it.
 ipcMain.handle('shell:revealInFinder', async (event, filePath) => {
-  shell.showItemInFinder(filePath);
+  shell.showItemInFolder(filePath);
 });
 
 ipcMain.handle('history:get', () => {
@@ -195,18 +195,243 @@ ipcMain.handle('inbox:clear', () => {
   return [];
 });
 
-// ── Project library ──────────────────────────────────────────────────────────
-// The library is a list of ABSOLUTE PATHS to sessions in their normal locations
-// (never copied or moved). Entries: {id, path, name, ext, addedAt}. The renderer
-// owns list order/content; main just persists it and answers filesystem queries.
+// ── Stemma folder ────────────────────────────────────────────────────────────
+// The library IS the stemma folder: a normal Finder folder holding ALIASES
+// (symlinks) to sessions that never leave their original locations. The app,
+// the window-drop and the droplet all plant aliases here; the UI mirrors the
+// folder's contents. Renders/ inside it is the default output. Adding to the
+// folder NEVER triggers a render — rendering starts only from the UI buttons.
 
-ipcMain.handle('library:get', () => {
-  return store.get('library', []);
+const DEFAULT_STEMMA_FOLDER = () => path.join(app.getPath('music'), 'Stemma');
+
+function stemmaFolderPath() {
+  return store.get('stemmaFolder', DEFAULT_STEMMA_FOLDER());
+}
+
+function ensureStemmaFolder() {
+  const folder = stemmaFolderPath();
+  fs.mkdirSync(path.join(folder, 'Renders'), { recursive: true });
+  return folder;
+}
+
+const SESSION_RE = /\.(logicx|als)$/i;
+// Plain session names AND Finder-alias names ("X.logicx alias",
+// duplicated ones get "X.logicx alias 2").
+const SESSION_OR_ALIAS_RE = /\.(logicx|als)(?: alias(?: \d+)?)?$/i;
+const FINDER_ALIAS_SUFFIX_RE = / alias(?: \d+)?$/i;
+
+// Finder-alias files start with the bookmark magic "book". This is the ground
+// truth — names are unreliable: Finder DROPS the extension when it names an
+// alias to a package (an alias to "Gamabunta.logicx" is just "Gamabunta").
+function hasBookmarkMagic(p) {
+  try {
+    const fd = fs.openSync(p, 'r');
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    fs.closeSync(fd);
+    return buf.toString('latin1') === 'book';
+  } catch (e) { return false; }
+}
+
+// "This plain file is a Finder alias, not a real session": by suffix, by the
+// impossible shape (a FILE named .logicx — real ones are directories), or by
+// content signature (covers extensionless aliases; a real .als is gzip data,
+// so no confusion).
+function looksLikeFinderAlias(p, ent, name) {
+  if (!ent.isFile()) return false;
+  if (FINDER_ALIAS_SUFFIX_RE.test(name)) return true;
+  if (/\.logicx$/i.test(name)) return true;
+  return hasBookmarkMagic(p);
+}
+
+// Resolve a Finder alias via the macOS bookmark API (JXA/ObjC) — no Finder
+// automation, no permission prompt. Returns the target path or null.
+const RESOLVE_ALIAS_JXA = `ObjC.import('Foundation');
+function run(argv) {
+  const url = $.NSURL.fileURLWithPath(argv[0]);
+  const data = $.NSURL.bookmarkDataWithContentsOfURLError(url, $());
+  if (!data || data.isNil()) return '';
+  const target = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(
+    data, 256 /* WithoutUI */, $(), $(), $());
+  if (!target || target.isNil()) return '';
+  return target.path.js;
+}`;
+
+function resolveFinderAlias(aliasPath) {
+  return new Promise((resolve) => {
+    execFile('osascript', ['-l', 'JavaScript', '-e', RESOLVE_ALIAS_JXA, aliasPath],
+      (err, stdout) => resolve((stdout || '').trim() || null));
+  });
+}
+
+// Resolutions are cached by mtime so the 3s rescan doesn't respawn osascript.
+const finderAliasCache = new Map(); // aliasPath -> {mtimeMs, target}
+
+async function resolveFinderAliasCached(aliasPath) {
+  let st = null;
+  try { st = fs.statSync(aliasPath); } catch (e) {}
+  const cached = finderAliasCache.get(aliasPath);
+  if (cached && st && cached.mtimeMs === st.mtimeMs) return cached.target;
+  const target = await resolveFinderAlias(aliasPath);
+  if (st && target) finderAliasCache.set(aliasPath, { mtimeMs: st.mtimeMs, target });
+  return target;
+}
+
+// List the folder's sessions. Three shortcut flavors plus the real thing all
+// count: symlinks (planted by the app/droplet), Finder aliases (⌥⌘-drag —
+// any name, found by content signature), and real session files/packages.
+// Each resolves to its original; dangling shortcuts report missing:true so
+// the UI greys them out instead of breaking.
+//
+// Housekeeping done in passing:
+//  - NORMALIZE: a Finder alias whose name lacks the original's full name is
+//    renamed to it ("Gamabunta" -> "Gamabunta.logicx"), so folder names always
+//    reflect the session they point at.
+//  - DEDUPE: shortcuts resolving to the same original produce ONE item.
+async function listStemmaItems(folder) {
+  const byTarget = new Map(); // resolved target -> item
+  const items = [];
+  for (const ent of fs.readdirSync(folder, { withFileTypes: true })) {
+    if (ent.name.startsWith('.')) continue;
+    let aliasPath = path.join(folder, ent.name);
+    let name = ent.name;
+    let targetPath = aliasPath;
+    let missing = false;
+
+    if (ent.isSymbolicLink()) {
+      if (!SESSION_RE.test(name)) continue;
+      try {
+        targetPath = fs.realpathSync(aliasPath);
+      } catch (e) {
+        try { targetPath = fs.readlinkSync(aliasPath); } catch (e2) {}
+        missing = true;
+      }
+    } else if (looksLikeFinderAlias(aliasPath, ent, name)) {
+      const resolved = await resolveFinderAliasCached(aliasPath);
+      if (!resolved) {
+        // Unresolvable alias: only list it if its name says "session".
+        if (!SESSION_OR_ALIAS_RE.test(name)) continue;
+        missing = true;
+      } else if (!SESSION_RE.test(resolved)) {
+        continue; // alias to something that isn't a DAW session — not ours
+      } else {
+        targetPath = resolved;
+        missing = !fs.existsSync(resolved);
+        // Normalize the alias's filename to the original's full name.
+        const desired = path.basename(resolved);
+        if (name !== desired) {
+          let dest = path.join(folder, desired);
+          if (!lexists(dest)) {
+            try {
+              fs.renameSync(aliasPath, dest);
+              finderAliasCache.delete(aliasPath);
+              finderAliasCache.set(dest, { mtimeMs: fs.statSync(dest).mtimeMs, target: resolved });
+              aliasPath = dest;
+              name = desired;
+            } catch (e) { console.error('[Stemma] normalize rename failed:', e); }
+          }
+          // If desired name is taken, leave as is — dedupe below handles it.
+        }
+      }
+    } else if (ent.isDirectory() || ent.isFile()) {
+      if (!SESSION_RE.test(name)) continue; // real session package/file only
+    } else {
+      continue;
+    }
+
+    const item = {
+      aliasPath,
+      name: name.replace(FINDER_ALIAS_SUFFIX_RE, ''),
+      targetPath,
+      missing,
+      ext: /\.als$/i.test(targetPath) || /\.als/i.test(name) ? 'als' : 'logicx',
+    };
+    // Dedupe by original: first healthy shortcut wins; a healthy one replaces
+    // a dangling duplicate.
+    const key = targetPath;
+    const seen = byTarget.get(key);
+    if (!seen) {
+      byTarget.set(key, item);
+      items.push(item);
+    } else if (seen.missing && !item.missing) {
+      items[items.indexOf(seen)] = item;
+      byTarget.set(key, item);
+    }
+  }
+  return items;
+}
+
+ipcMain.handle('stemma:scan', async () => {
+  const folder = ensureStemmaFolder();
+  return {
+    folder,
+    defaultOutput: path.join(folder, 'Renders'),
+    items: await listStemmaItems(folder),
+  };
 });
 
-ipcMain.handle('library:save', (event, entries) => {
-  store.set('library', entries);
-  return entries;
+// True if anything sits at p — including a dangling symlink, which
+// fs.existsSync() reports as absent because it follows the link.
+function lexists(p) {
+  try { fs.lstatSync(p); return true; } catch (e) { return false; }
+}
+
+// Plant aliases for the given originals. A session already reachable through
+// ANY existing shortcut in the folder (symlink, Finder alias, or the real
+// file) is skipped — no duplicate rows, no duplicate files. Name collisions
+// with a DIFFERENT session get a numbered name (My Song 2.logicx).
+ipcMain.handle('stemma:add', async (event, originalPaths) => {
+  const folder = ensureStemmaFolder();
+  const existing = new Set((await listStemmaItems(folder)).map(it => {
+    try { return fs.realpathSync(it.targetPath); } catch (e) { return it.targetPath; }
+  }));
+  let added = 0;
+  for (const original of originalPaths || []) {
+    let realOriginal = original;
+    try { realOriginal = fs.realpathSync(original); } catch (e) {}
+    if (existing.has(realOriginal)) continue; // already in the folder — no-op
+    const ext = path.extname(realOriginal);
+    const stem = path.basename(realOriginal, ext);
+    let dest = path.join(folder, stem + ext);
+    let n = 2;
+    while (lexists(dest)) {
+      dest = path.join(folder, `${stem} ${n}${ext}`);
+      n += 1;
+    }
+    try {
+      fs.symlinkSync(realOriginal, dest);
+      existing.add(realOriginal);
+      added += 1;
+    } catch (e) {
+      console.error('[Stemma] could not alias', original, e);
+    }
+  }
+  return added;
+});
+
+// Remove = trash the alias (or the real file, if one was dragged straight into
+// the folder) — always recoverable, and originals behind aliases are untouched.
+ipcMain.handle('stemma:remove', async (event, aliasPath) => {
+  const folder = stemmaFolderPath();
+  if (path.dirname(aliasPath) !== folder) return false; // only ever touch the folder
+  await shell.trashItem(aliasPath);
+  return true;
+});
+
+ipcMain.handle('stemma:choose', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled) return null;
+  store.set('stemmaFolder', result.filePaths[0]);
+  return ensureStemmaFolder();
+});
+
+// Per-session render results (keyed by ORIGINAL path — survives alias renames).
+ipcMain.handle('meta:get', () => store.get('renderMeta', {}));
+ipcMain.handle('meta:save', (event, metaMap) => {
+  store.set('renderMeta', metaMap);
+  return metaMap;
 });
 
 // Multi-select picker for library additions. openFile+openDirectory so both a

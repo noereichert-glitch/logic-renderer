@@ -1,21 +1,30 @@
-// stemma renderer — Project Library edition.
-// The library is a persisted list of session paths (sessions never move).
-// Render one row, or Render All — a serial queue feeds the one-at-a-time
-// Logic export backend (POST /export + progress polling, unchanged).
+// stemma renderer — Stemma Folder edition.
+// The library IS the stemma folder: the UI mirrors its contents (aliases to
+// sessions that never leave home, plus any real sessions dragged in via
+// Finder). Adding — via the + button, a window drop, or the droplet — only
+// plants an alias in the folder. NOTHING auto-renders: rendering starts only
+// from the Render / Render All buttons, one at a time (Logic's limit).
 
 const API = 'http://127.0.0.1:5123';
 const STORAGE_OUTPUT_FOLDER = 'stemExport.outputFolder';
+const SYNC_MS = 3000;          // folder mirror cadence
+const STATS_EVERY = 10;        // full du/mtime refresh every Nth sync
 
 const DAW_LABEL = { logicx: 'Logic Pro', als: 'Ableton Live' };
 
 // ── State ────────────────────────────────────────────────────────────────────
-let library = [];        // [{id, path, name, ext, addedAt, lastRender}]
-let stats = {};          // path -> {exists, mtimeMs, sizeBytes}
-let runtime = {};        // id -> {status: queued|rendering|done|failed, detail, progress}
+let entries = [];        // mirror of the folder: {id, aliasPath, path, name, ext, missing}
+let stats = {};          // original path -> {exists, mtimeMs, sizeBytes}
+let meta = {};           // original path -> {date, folder, zipPath, stemCount}
+let runtime = {};        // id -> {status: queued|rendering|done|failed, detail}
 let queue = [];          // ids waiting to render
 let activeId = null;     // id currently rendering
 let dawFilter = 'all';
+let stemmaFolder = null;
 let outputFolder = localStorage.getItem(STORAGE_OUTPUT_FOLDER) || null;
+let userPickedOutput = !!outputFolder;
+let rowEls = new Map();  // id -> row element (for targeted status updates)
+let syncTick = 0;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
@@ -34,7 +43,7 @@ document.querySelectorAll('.rail .tab').forEach(tab => {
   });
 });
 
-// ── Output folder (remembered between runs) ──────────────────────────────────
+// ── Folders (rail footer) ────────────────────────────────────────────────────
 function refreshOutputFolderDisplay() {
   const el = $('output-path-display');
   el.textContent = outputFolder || 'Not set';
@@ -46,67 +55,89 @@ $('btn-pick-folder').addEventListener('click', async () => {
   const folder = await window.electronAPI.openFolder();
   if (folder) {
     outputFolder = folder;
+    userPickedOutput = true;
     localStorage.setItem(STORAGE_OUTPUT_FOLDER, folder);
     refreshOutputFolderDisplay();
     renderList();
   }
 });
 
-// ── Library ──────────────────────────────────────────────────────────────────
-function extOf(p) {
-  if (p.endsWith('.als')) return 'als';
-  // .logicx package, or a folder-style Logic project (no extension) — the
-  // backend resolver turns either into the inner .logicx at render time.
-  return 'logicx';
+$('btn-reveal-stemma').addEventListener('click', () =>
+  stemmaFolder && window.electronAPI.openFolderInFinder(stemmaFolder));
+
+$('btn-change-stemma').addEventListener('click', async () => {
+  const folder = await window.electronAPI.chooseStemmaFolder();
+  if (folder) syncFolder(true);
+});
+
+// ── Folder mirror ────────────────────────────────────────────────────────────
+function extOf(p) { return p.toLowerCase().endsWith('.als') ? 'als' : 'logicx'; }
+
+async function syncFolder(force) {
+  const res = await window.electronAPI.scanStemma();
+  stemmaFolder = res.folder;
+  const el = $('stemma-folder-display');
+  el.textContent = stemmaFolder;
+  el.title = stemmaFolder;
+
+  // Default output = Renders/ inside the stemma folder, until the user picks
+  // their own (which persists and always wins).
+  if (!userPickedOutput && outputFolder !== res.defaultOutput) {
+    outputFolder = res.defaultOutput;
+    refreshOutputFolderDisplay();
+  }
+
+  const prevPaths = entries.map(e => e.id).join('\n');
+  entries = res.items.map(it => ({
+    id: it.aliasPath,
+    aliasPath: it.aliasPath,
+    path: it.targetPath,
+    name: it.name.replace(/\.(logicx|als)$/i, ''),
+    ext: it.ext || extOf(it.name),
+    missing: it.missing,
+  }));
+  const changed = entries.map(e => e.id).join('\n') !== prevPaths;
+
+  if (changed || force || (syncTick % STATS_EVERY === 0)) {
+    const targets = entries.filter(e => !e.missing).map(e => e.path);
+    stats = targets.length ? await window.electronAPI.libraryStats(targets) : {};
+  }
+  syncTick += 1;
+  if (changed || force) renderList();
 }
 
-function nameOf(p) {
-  const base = p.replace(/\/+$/, '').split('/').pop();
-  return base.replace(/\.(logicx|als)$/i, '');
-}
-
-async function loadLibrary() {
-  library = await window.electronAPI.getLibrary();
-  await refreshStats();
-  renderList();
-}
-
-async function refreshStats() {
-  if (!library.length) { stats = {}; return; }
-  stats = await window.electronAPI.libraryStats(library.map(e => e.path));
+// ── Adding sessions (all three roads end here — never renders anything) ──────
+async function addOriginals(paths) {
+  if (!paths || !paths.length) return;
+  await window.electronAPI.addToStemma(paths);
+  await syncFolder(true);
 }
 
 $('btn-add-projects').addEventListener('click', async () => {
-  const paths = await window.electronAPI.addProjects();
-  if (!paths.length) return;
-  const known = new Set(library.map(e => e.path));
-  for (const p of paths) {
-    if (known.has(p)) continue;
-    known.add(p);
-    library.push({
-      id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-      path: p,
-      name: nameOf(p),
-      ext: extOf(p),
-      addedAt: new Date().toISOString(),
-      lastRender: null,
-    });
-  }
-  await window.electronAPI.saveLibrary(library);
-  await refreshStats();
-  renderList();
+  addOriginals(await window.electronAPI.addProjects());
+});
+
+// Drag-and-drop anywhere on the window: plant aliases for dropped sessions.
+// Accept .logicx / .als and folder-style projects (dropped folders report an
+// empty type). Anything else is ignored.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const paths = Array.from(e.dataTransfer.files)
+    .filter(f => f.name.endsWith('.logicx') || f.name.endsWith('.als') || f.type === '')
+    .map(f => f.path)
+    .filter(Boolean);
+  addOriginals(paths);
 });
 
 async function removeEntry(id) {
-  const entry = library.find(e => e.id === id);
+  const entry = entries.find(e => e.id === id);
   if (!entry) return;
-  // Never yank a session out from under the queue.
-  if (activeId === id) return;
+  if (activeId === id) return; // never yank a rendering session
   queue = queue.filter(q => q !== id);
-  library = library.filter(e => e.id !== id);
   delete runtime[id];
-  await window.electronAPI.saveLibrary(library);
-  renderList();
+  await window.electronAPI.removeFromStemma(entry.aliasPath);
+  await syncFolder(true);
 }
 
 $('daw-filter').addEventListener('change', (e) => {
@@ -137,10 +168,9 @@ function fmtDate(ms) {
 // ── List rendering ───────────────────────────────────────────────────────────
 const CHECK_SVG = '<svg class="check" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#7fd4a8" stroke-width="1.4"/><path d="M5 8.2 7.2 10.4 11 6.4" stroke="#7fd4a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-function statusCell(entry) {
+function statusCellHTML(entry) {
   const rt = runtime[entry.id];
-  const st = stats[entry.path] || {};
-  if (st.exists === false) return '<div class="status st-warn"><span>File not found</span></div>';
+  if (entry.missing) return '<div class="status st-warn"><span>Original not found</span></div>';
   if (rt) {
     if (rt.status === 'queued') return '<div class="status st-idle"><span>Queued</span></div>';
     if (rt.status === 'rendering')
@@ -148,35 +178,46 @@ function statusCell(entry) {
     if (rt.status === 'failed')
       return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed — see Inbox</span></div>`;
     if (rt.status === 'done')
-      return `<div class="status st-done" data-reveal="${entry.id}">${CHECK_SVG}<span>Done — show .zip</span></div>`;
+      return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span></div>`;
   }
   if (entry.ext === 'als') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
-  if (entry.lastRender)
-    return `<div class="status st-done" data-reveal="${entry.id}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(entry.lastRender.date))}</span></div>`;
+  const lr = meta[entry.path];
+  if (lr)
+    return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span></div>`;
   return '<div class="status st-idle"><span>Ready</span></div>';
+}
+
+// Update ONE row's status cell in place — no full-list rebuild, no hover
+// flicker. Falls back to a full renderList if the row isn't on screen.
+function updateRowStatus(entry) {
+  const row = rowEls.get(entry.id);
+  if (!row) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = statusCellHTML(entry);
+  row.replaceChild(tmp.firstChild, row.children[3]);
 }
 
 function renderList() {
   const list = $('library-list');
-  const visible = library.filter(e => dawFilter === 'all' || e.ext === dawFilter);
+  const visible = entries.filter(e => dawFilter === 'all' || e.ext === dawFilter);
 
-  $('count-projects').textContent = library.length;
+  $('count-projects').textContent = entries.length;
+  rowEls = new Map();
 
   if (!visible.length) {
-    list.innerHTML = `<div class="empty-state">${library.length
+    list.innerHTML = `<div class="empty-state">${entries.length
       ? 'No projects match this filter.'
-      : 'Your library is empty. Add sessions with “+ Add Projects” —<br>they stay in place on disk; stemma only remembers where they live.'}</div>`;
+      : 'The stemma folder is empty. Drag sessions onto this window (or the droplet),<br>or use “+ Add Projects” — originals never move; stemma keeps an alias.'}</div>`;
   } else {
     list.innerHTML = '';
     for (const entry of visible) {
       const st = stats[entry.path] || {};
       const rt = runtime[entry.id];
-      const missing = st.exists === false;
       const busy = rt && (rt.status === 'queued' || rt.status === 'rendering');
-      const renderable = entry.ext === 'logicx' && !missing && !busy && outputFolder;
+      const renderable = entry.ext === 'logicx' && !entry.missing && !busy && outputFolder;
 
       const row = document.createElement('div');
-      row.className = 'row' + (missing ? ' missing' : '');
+      row.className = 'row' + (entry.missing ? ' missing' : '');
       row.innerHTML = `
         <div class="name">
           <div class="badge ${entry.ext}">${entry.ext === 'als' ? 'A' : 'L'}</div>
@@ -184,43 +225,41 @@ function renderList() {
         </div>
         <div class="size">${fmtBytes(st.sizeBytes)}</div>
         <div class="mod">${fmtDate(st.mtimeMs)}</div>
-        ${statusCell(entry)}
+        ${statusCellHTML(entry)}
         <div class="actions">
-          <button class="btn-render" data-render="${entry.id}" ${renderable ? '' : 'disabled'}
+          <button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
             title="${outputFolder ? (entry.ext === 'als' ? 'Ableton renderer not connected yet' : 'Render stems') : 'Choose an output folder first'}">Render</button>
-          <button class="btn-remove" data-remove="${entry.id}" title="Remove from library">✕</button>
+          <button class="btn-remove" data-remove="${esc(entry.id)}" title="Remove from stemma (alias goes to Trash; original untouched)">✕</button>
         </div>`;
+      rowEls.set(entry.id, row);
       list.appendChild(row);
     }
   }
 
-  // Delegated clicks (rebuilt rows each pass keep this simple).
   list.querySelectorAll('[data-render]').forEach(b =>
     b.addEventListener('click', () => enqueue([b.dataset.render])));
   list.querySelectorAll('[data-remove]').forEach(b =>
     b.addEventListener('click', () => removeEntry(b.dataset.remove)));
   list.querySelectorAll('[data-reveal]').forEach(el =>
     el.addEventListener('click', () => {
-      const entry = library.find(e => e.id === el.dataset.reveal);
-      const lr = entry && entry.lastRender;
+      const entry = entries.find(e => e.id === el.dataset.reveal);
+      const lr = entry && meta[entry.path];
       if (lr && lr.zipPath) window.electronAPI.revealInFinder(lr.zipPath);
       else if (lr && lr.folder) window.electronAPI.openFolderInFinder(lr.folder);
     }));
 
-  // Render All: everything visible, renderable, not already queued.
+  // Render All = every renderable row in the CURRENT filtered view.
   const candidates = visible.filter(e => {
-    const st = stats[e.path] || {};
     const rt = runtime[e.id];
-    return e.ext === 'logicx' && st.exists !== false && !(rt && (rt.status === 'queued' || rt.status === 'rendering'));
+    return e.ext === 'logicx' && !e.missing && !(rt && (rt.status === 'queued' || rt.status === 'rendering'));
   });
   const btnAll = $('btn-render-all');
   btnAll.disabled = !outputFolder || !candidates.length;
   btnAll.onclick = () => enqueue(candidates.map(e => e.id));
 
-  // Footstrip summary.
-  const totalBytes = library.reduce((a, e) => a + ((stats[e.path] || {}).sizeBytes || 0), 0);
+  const totalBytes = entries.reduce((a, e) => a + ((stats[e.path] || {}).sizeBytes || 0), 0);
   $('foot-summary').textContent =
-    `${library.length} project${library.length !== 1 ? 's' : ''} · ${fmtBytes(totalBytes)}` +
+    `${entries.length} project${entries.length !== 1 ? 's' : ''} · ${fmtBytes(totalBytes)}` +
     (queue.length ? ` · ${queue.length} queued` : '');
 }
 
@@ -238,7 +277,7 @@ function enqueue(ids) {
 async function processQueue() {
   if (activeId || !queue.length) return;
   activeId = queue.shift();
-  const entry = library.find(e => e.id === activeId);
+  const entry = entries.find(e => e.id === activeId);
   if (!entry) { activeId = null; return processQueue(); }
 
   runtime[activeId] = { status: 'rendering', detail: 'Launching Logic Pro…' };
@@ -249,6 +288,7 @@ async function processQueue() {
     const res = await fetch(`${API}/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      // Render the ORIGINAL the alias points at — always the current session.
       body: JSON.stringify({ file_path: entry.path, output_folder: outputFolder }),
     });
     const startData = await res.json();
@@ -259,6 +299,7 @@ async function processQueue() {
   }
 
   activeId = null;
+  refreshCounts();
   if (!queue.length) setFootProgress(null);
   renderList();
   processQueue();
@@ -275,8 +316,7 @@ function pollUntilDone(entry) {
       if (!data.done) {
         const detail = data.status_title || 'Rendering…';
         runtime[entry.id] = { status: 'rendering', detail };
-        const stEl = document.querySelector(`[data-render="${entry.id}"]`);
-        if (stEl) renderList(); // row exists → refresh its status text
+        updateRowStatus(entry);
         setFootProgress(entry.name, detail, data.progress || 0);
         return;
       }
@@ -288,19 +328,19 @@ function pollUntilDone(entry) {
       }
       const sets = data.sets || {};
       const stemCount = Object.values(sets).reduce((a, f) => a + (f || []).length, 0);
-      entry.lastRender = {
+      meta[entry.path] = {
         date: new Date().toISOString(),
         folder: data.project_folder || outputFolder,
         zipPath: data.zip_path || null,
         stemCount,
       };
       runtime[entry.id] = { status: 'done' };
-      await window.electronAPI.saveLibrary(library);
+      await window.electronAPI.saveRenderMeta(meta);
       await window.electronAPI.saveHistory({
         project: entry.path.split('/').pop(),
-        date: entry.lastRender.date,
-        folder: entry.lastRender.folder,
-        zip_path: entry.lastRender.zipPath,
+        date: meta[entry.path].date,
+        folder: meta[entry.path].folder,
+        zip_path: meta[entry.path].zipPath,
         set_counts: Object.fromEntries(Object.entries(sets).map(([k, f]) => [k, (f || []).length])),
       });
       resolve();
@@ -316,16 +356,25 @@ function setFootProgress(name, detail, pct) {
   $('foot-progress-bar').style.width = (pct || 0) + '%';
 }
 
-// ── Backend health pill ──────────────────────────────────────────────────────
+// ── Backend health + live rail counts ────────────────────────────────────────
 async function pollHealth() {
   const dot = $('health-dot'), label = $('health-label');
   try {
     const res = await fetch(`${API}/health`);
-    if (res.ok) { dot.className = 'sync-dot ok'; label.textContent = 'Renderer ready'; return; }
-    throw new Error();
+    if (res.ok) { dot.className = 'sync-dot ok'; label.textContent = 'Renderer ready'; }
+    else throw new Error();
   } catch (e) {
     dot.className = 'sync-dot err'; label.textContent = 'Renderer offline';
   }
+  refreshCounts();
+}
+
+async function refreshCounts() {
+  const [h, m] = await Promise.all([
+    window.electronAPI.getHistory(), window.electronAPI.getInbox(),
+  ]);
+  $('count-history').textContent = h.length;
+  $('count-inbox').textContent = m.length;
 }
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -413,9 +462,10 @@ $('btn-clear-inbox').addEventListener('click', async () => {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 refreshOutputFolderDisplay();
-loadLibrary();
+(async () => {
+  meta = await window.electronAPI.getRenderMeta();
+  await syncFolder(true);
+})();
+setInterval(syncFolder, SYNC_MS);
 pollHealth();
 setInterval(pollHealth, 5000);
-// Rail counts on startup (screens lazy-load their lists on first visit).
-window.electronAPI.getHistory().then(h => { $('count-history').textContent = h.length; });
-window.electronAPI.getInbox().then(m => { $('count-inbox').textContent = m.length; });
