@@ -477,13 +477,18 @@ class LogicRenderBridge:
     def is_alive(self) -> bool:
         return _process_alive(self.process_name)
 
-    def wait_for_logic_ready(self, timeout: float = 180.0,
+    def wait_for_logic_ready(self, timeout: float = 600.0,
                              settle: float = 3.0) -> bool:
         """Wait until Logic's project window is up, then a short settle.
 
         Adaptive: returns as soon as a STANDARD window with a real title and no
         blocking sheet exists (the project finished opening) plus `settle` seconds
         for plugin load to taper — proven floor = `settle`, hard ceiling = `timeout`.
+        The ceiling is deliberately generous (10 min): Logic's FIRST launch after a
+        reboot re-scans plugins and blew through the old 180s live (2026-07-30,
+        "did not finish loading in time"). The poll exits the moment Logic is
+        ready, so a high ceiling costs nothing on normal loads — the render starts
+        the instant Logic is ready, exactly as before.
         Logic can be running with zero/untitled windows while a project loads, so
         we poll for a *named* AXStandardWindow.
         """
@@ -607,38 +612,7 @@ class LogicRenderBridge:
         # Defensive: clear a modal "Key Command Assignment Conflicts" sheet that can
         # block the main window before we try to open the Export menu.
         self._dismiss_conflict_sheet()
-        # Headless: run the DialogGuard right before opening the Export menu (catalog
-        # requirement #1) — engine decides per dialog; element clicks only, cursor
-        # never moves. Context carries the pass # + destination for the C2 gate. May
-        # raise DialogGuardPause (propagates → orchestrator quits Logic cleanly).
-        if self.headless:
-            self._handle_dialogs(self._dialog_context(bypass_fx=bypass_fx,
-                                                      dest=output_folder))
-
-        # 1. Open the export dialog. Headless: the menu-bar element click works
-        # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`, no
-        # focus steal. Legacy: keep the frontmost flick.
-        if self.headless:
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-            end tell''', timeout=20)
-        else:
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                set frontmost to true
-                delay 0.4
-                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-            end tell''', timeout=20)
-
-        # Poll for the dialog window to appear.
-        if not self._wait_for_open_dialog(timeout=30):
-            if not self.is_alive():
-                raise LogicCrashedError('Logic died while opening the export dialog.')
-            raise RuntimeError('Export dialog did not open.')
-
-        # Defensive again: the conflict sheet can also surface as the dialog opens.
-        self._dismiss_conflict_sheet()
-
-        # 2 + 3 + 4. Set destination, controls, and export.
+        # 2 + 3 + 4 prep — pure string building, done once, reused per attempt.
         desired_bypass = 1 if bypass_fx else 0
 
         # The accessory controls (Format/Bypass/Normalize/Range) and the Export
@@ -740,31 +714,71 @@ class LogicRenderBridge:
                 click button "Export" of w
             end if'''
 
-        # The destination path field lives ONLY inside the ⌘⇧G "Go to Folder" sheet
-        # (window "Open" has no path field — just a search field + the "Where:"
-        # pop-up; P1/P2 probes, docs/2026-06-28/probe_save_panel.txt). The sheet has
-        # no accessible "Go" button (only Close), so Return is required to confirm.
-        if self.headless:
-            # HEADLESS: backgrounded element actions + a single focus-MASKED moment
-            # for the two irreducible chords (⌘⇧G, Return). No path typing; the
-            # destination is set by AX value. Cursor never moves.
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+        # Stages 1–4 (open dialog → destination → controls → Export click) run as
+        # ONE retryable unit. A focus race during the masked flick (the user
+        # clicking/typing at that instant) can orphan or dismiss the dialog
+        # mid-sequence — seen live 2026-08-06 as -1728 "Can't get window Open"
+        # (Hers ×2: QuickTime / stemma frontmost). Every such failure happens
+        # BEFORE the Export click (the stage's last action), so redoing the whole
+        # stage is safe. Crashes and DialogGuardPause propagate immediately.
+        def _dialog_stage():
+            # DialogGuard first (catalog requirement #1) — engine decides per
+            # dialog; element clicks only, cursor never moves. Context carries the
+            # pass # + destination for the C2 gate. May raise DialogGuardPause
+            # (propagates → orchestrator quits Logic cleanly). Re-runs per attempt.
+            if self.headless:
+                self._handle_dialogs(self._dialog_context(bypass_fx=bypass_fx,
+                                                          dest=output_folder))
+
+            # 1. Open the export dialog. Headless: the menu-bar element click works
+            # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`,
+            # no focus steal. Legacy: keep the frontmost flick.
+            if self.headless:
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
+            end tell''', timeout=20)
+            else:
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set frontmost to true
+                delay 0.4
+                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
+            end tell''', timeout=20)
+
+            # Poll for the dialog window to appear.
+            if not self._wait_for_open_dialog(timeout=30):
+                if not self.is_alive():
+                    raise LogicCrashedError('Logic died while opening the export dialog.')
+                raise RuntimeError('Export dialog did not open.')
+
+            # Defensive again: the conflict sheet can surface as the dialog opens.
+            self._dismiss_conflict_sheet()
+
+            # The destination path field lives ONLY inside the ⌘⇧G "Go to Folder"
+            # sheet (window "Open" has no path field — just a search field + the
+            # "Where:" pop-up; P1/P2 probes, docs/2026-06-28/probe_save_panel.txt).
+            # The sheet has no accessible "Go" button (only Close), so Return is
+            # required to confirm.
+            if self.headless:
+                # HEADLESS: backgrounded element actions + a single focus-MASKED
+                # moment for the two irreducible chords (⌘⇧G, Return). No path
+                # typing; the destination is set by AX value. Cursor never moves.
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
                 if exists button "Show Options" of w then
                     click button "Show Options" of w
                     delay 0.3
                 end if
             end tell''', timeout=20)
-            # Two sheet-waits are POLLED (proceed the instant the sheet
-            # appears/vanishes) instead of fixed sleeps — this shrinks the masked
-            # flick and returns focus to the user as soon as the Go-to sheet is
-            # actually gone. Each poll caps at ~3s (60 × 50ms) and, on timeout,
-            # falls back to the ORIGINAL fixed delay so it is never worse than
-            # before. The other delays (the 0.15 post-activation sleep in
-            # _run_masked_keys and the 0.3 after set-value) are unchanged. The body
-            # returns a marker string when a fallback fires so _run_masked_keys can
-            # log it.
-            self._run_masked_keys(f'''
+                # Two sheet-waits are POLLED (proceed the instant the sheet
+                # appears/vanishes) instead of fixed sleeps — this shrinks the
+                # masked flick and returns focus to the user as soon as the Go-to
+                # sheet is actually gone. Each poll caps at ~3s (60 × 50ms) and, on
+                # timeout, falls back to the ORIGINAL fixed delay so it is never
+                # worse than before. The other delays (the 0.15 post-activation
+                # sleep in _run_masked_keys and the 0.3 after set-value) are
+                # unchanged. The body returns a marker string when a fallback fires
+                # so _run_masked_keys can log it.
+                self._run_masked_keys(f'''
                 -- ⌘⇧G with ACTIVATION RETRY: the chord only lands if Logic's
                 -- activation actually completed — a fixed 0.15s settle after
                 -- `set frontmost` proved racy (the chord fired into the void and
@@ -813,16 +827,16 @@ class LogicRenderBridge:
                 if (not fb1) and attempts > 1 then set flickMsg to flickMsg & "RETRY: Go-to sheet appeared on attempt " & (attempts as text) & "; "
                 if fb2 then set flickMsg to flickMsg & "FALLBACK sheet-gone poll timed out (~3s) -> used delay 0.8; "
                 return flickMsg''')
-            # Controls + Export click — the single `controls_body` osascript.
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                # Controls + Export click — the single `controls_body` osascript.
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
 {controls_body}
             end tell''', timeout=60)
-        else:
-            # LEGACY (not headless): one frontmost-held script that TYPES the
-            # destination path char-by-char (⌘⇧G + ⌘A + keystroke "<path>"). Kept as
-            # the pre-headless fallback.
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            else:
+                # LEGACY (not headless): one frontmost-held script that TYPES the
+                # destination path char-by-char (⌘⇧G + ⌘A + keystroke "<path>").
+                # Kept as the pre-headless fallback.
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
                 if exists button "Show Options" of w then
                     click button "Show Options" of w
@@ -840,6 +854,26 @@ class LogicRenderBridge:
                 delay 0.8
 {controls_body}
             end tell''', timeout=60)
+
+        # Run the stage; recover and retry on the known transient failures.
+        for attempt in range(1, 4):
+            try:
+                _dialog_stage()
+                break
+            except (LogicCrashedError, DialogGuardPause):
+                raise
+            except Exception as e:
+                msg = str(e)
+                transient = ('-1728' in msg or '-1719' in msg
+                             or 'Export dialog did not open' in msg)
+                if not transient or attempt == 3:
+                    raise
+                if not self.is_alive():
+                    raise LogicCrashedError('Logic died during the export-dialog stage.')
+                print(f'[Exporter] export-dialog stage failed (attempt {attempt}): '
+                      f'{msg} — recovering and retrying.', flush=True)
+                self._close_export_dialog_if_open()
+                time.sleep(1.0)
 
         # 4b. Defensive: a stray "Replace existing files?" sheet (shouldn't occur —
         # we sort between passes so the root is empty — but handle it).
@@ -864,6 +898,27 @@ class LogicRenderBridge:
                 pass
             time.sleep(0.4)
         return False
+
+    def _close_export_dialog_if_open(self):
+        """Best-effort tidy-up between export-dialog attempts: cancel a stray
+        Go-to-Folder sheet, then the export dialog itself, so the retry reopens
+        from a clean slate. Backgrounded element clicks only; never raises."""
+        try:
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                if exists window "Open" then
+                    if exists sheet 1 of window "Open" then
+                        try
+                            click button "Cancel" of sheet 1 of window "Open"
+                        end try
+                        delay 0.3
+                    end if
+                    try
+                        click button "Cancel" of window "Open"
+                    end try
+                end if
+            end tell''', timeout=15)
+        except Exception:
+            pass
 
     # — DialogGuard: detector + decision + executor (headless only, step 6b) —
     # Replaces the old hardcoded safe-button whitelist with the catalog-driven
