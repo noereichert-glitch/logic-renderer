@@ -735,7 +735,7 @@ class LogicRenderBridge:
             # no focus steal. Legacy: keep the frontmost flick.
             # A busy Logic (post-load churn, loaded machine) can sit unresponsive
             # past the osascript timeout while the click is merely QUEUED — seen
-            # live 2026-08-31 ("timed out after 20 seconds" on this exact click).
+            # live 2026-09-07 ("timed out after 20 seconds" on this exact click).
             # So: 40s of patience, and on a timeout don't fail — the click often
             # still lands late; the dialog poll below is the real judge.
             try:

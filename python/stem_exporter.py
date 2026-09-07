@@ -214,7 +214,7 @@ class StemExporter:
         """Delete `folder`, tolerating Finder droppings (.DS_Store / ._*) that
         external (exFAT) volumes collect and that can re-appear between the
         recursive walk and the final rmdir → Errno 66 'Directory not empty'
-        (seen live 2026-08-31 on a Seagate). Scrub and retry once; return True on
+        (seen live 2026-09-07 on a Seagate). Scrub and retry once; return True on
         success, False if it still won't go (caller downgrades to a warning)."""
         for attempt in (1, 2):
             try:
