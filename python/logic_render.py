@@ -733,16 +733,27 @@ class LogicRenderBridge:
             # 1. Open the export dialog. Headless: the menu-bar element click works
             # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`,
             # no focus steal. Legacy: keep the frontmost flick.
-            if self.headless:
-                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            # A busy Logic (post-load churn, loaded machine) can sit unresponsive
+            # past the osascript timeout while the click is merely QUEUED — seen
+            # live 2026-08-31 ("timed out after 20 seconds" on this exact click).
+            # So: 40s of patience, and on a timeout don't fail — the click often
+            # still lands late; the dialog poll below is the real judge.
+            try:
+                if self.headless:
+                    _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-            end tell''', timeout=20)
-            else:
-                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            end tell''', timeout=40)
+                else:
+                    _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set frontmost to true
                 delay 0.4
                 click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-            end tell''', timeout=20)
+            end tell''', timeout=40)
+            except Exception as e:
+                if 'timed out' not in str(e):
+                    raise
+                print('[Exporter] export menu click timed out — checking whether '
+                      'the dialog opened anyway.', flush=True)
 
             # Poll for the dialog window to appear.
             if not self._wait_for_open_dialog(timeout=30):
@@ -865,6 +876,7 @@ class LogicRenderBridge:
             except Exception as e:
                 msg = str(e)
                 transient = ('-1728' in msg or '-1719' in msg
+                             or 'timed out' in msg
                              or 'Export dialog did not open' in msg)
                 if not transient or attempt == 3:
                     raise

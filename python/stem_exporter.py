@@ -135,43 +135,102 @@ class StemExporter:
                 print(f'[Exporter] WARNING: clean quit failed: {e}')
             print(f'[Exporter] Logic quit in {time.time()-t_quit:.1f}s.')
 
-        # T11 guard (REQUIRED): 02_Raw must differ in PCM from 01_With_FX.
-        self._set_status('Verifying raw pass…', 'Confirming FX were bypassed', progress=88)
-        self._assert_raw_differs(project_folder)
+        # ── Post-render staged-success ladder ─────────────────────────────────
+        # BORDER: everything below here is past the point where the deliverable
+        # (the stems) provably exists — both passes rendered and each _validate_set
+        # passed above (a <2-stem set already raised → hard failure, correctly
+        # BELOW the border). From here nothing FAILS the render: problems become
+        # warnings and the flow continues. Outcome = 'ok' | 'ok_warnings'; genuine
+        # failures only ever come from the exceptions raised above the border.
+        warnings = []
 
-        # Zip.
-        self._set_status('Zipping…', 'Packaging the sets', progress=94)
-        zip_path = zip_project_folder(project_folder)
+        # ② Raw-differs — quality flag, NO LONGER fatal. Identical passes ⇒ either
+        # the project has no effects (fine) or FX bypass didn't take (a real bug we
+        # can't yet distinguish without a project parser). Warn and continue.
+        self._set_status('Verifying raw pass…', 'Confirming FX were bypassed', progress=88)
+        for w in self._raw_differs_warnings(project_folder):
+            warnings.append(w)
+            print(f'[Exporter] WARNING: {w["message"]}')
 
         sets = {
             '01_With_FX': sorted(glob.glob(os.path.join(project_folder, '01_With_FX', '*.wav'))),
             '02_Raw': sorted(glob.glob(os.path.join(project_folder, '02_Raw', '*.wav'))),
         }
 
-        # Verify the zip is a COMPLETE, valid copy BEFORE deleting the source
-        # folder — that folder holds the ONLY other copy of the stems, so the
-        # check must be solid. _verify_zip raises on any problem; if it raises we
-        # skip the delete and the failure propagates to server.py's terminal
-        # except (critical-failure notification/inbox), folder left intact.
+        # ③ Zip. If it fails, the un-zipped stems ARE the deliverable — keep the
+        # folder and report success-with-warnings pointing at it.
+        self._set_status('Zipping…', 'Packaging the sets', progress=94)
+        try:
+            zip_path = zip_project_folder(project_folder)
+        except Exception as e:
+            warnings.append({'stage': 'zip', 'message':
+                f'Stems rendered, but zipping failed ({e}). The stems are in the '
+                f'project folder.', 'path': project_folder})
+            print(f'[Exporter] WARNING: zipping failed: {e}')
+            return self._finish('ok_warnings', warnings, sets, None, project_folder)
+
+        # ④ Verify the zip is a COMPLETE, valid copy BEFORE deleting the source.
+        # If verify fails we SKIP the delete (folder is the only other copy), so
+        # the un-zipped stems stay intact — success-with-warnings pointing at them.
         self._set_status('Verifying zip…', 'Confirming the archive is complete', progress=97)
-        self._verify_zip(zip_path, sets)
+        try:
+            self._verify_zip(zip_path, sets)
+        except Exception as e:
+            warnings.append({'stage': 'zip_verify', 'message':
+                f'Stems rendered, but the zip could not be verified ({e}). The '
+                f'un-zipped stems in the project folder are intact.',
+                'path': project_folder})
+            print(f'[Exporter] WARNING: zip verify failed: {e}')
+            return self._finish('ok_warnings', warnings, sets, zip_path, project_folder)
 
-        # Verified → delete the source folder we just zipped, leaving only
-        # <project>.zip. We only ever remove the per-job folder we created above.
+        # ⑤ Verified → delete the source folder, leaving only <project>.zip.
+        # Purely janitorial — never fails the render.
         self._set_status('Cleaning up…', 'Removing the un-zipped stem folder', progress=99)
-        shutil.rmtree(project_folder)
-        print(f'[Exporter] Source folder removed after verified zip: {project_folder}')
+        if not self._remove_folder_robust(project_folder):
+            warnings.append({'stage': 'cleanup', 'message':
+                'Render complete and zipped. Could not remove the leftover stem '
+                'folder — safe to delete by hand.', 'path': project_folder})
 
-        result = {
-            # Source folder is gone; point the UI's "Open Folder" at the folder
-            # that now holds the zip so it opens a real path.
-            'project_folder': self.output_folder,
+        status = 'ok_warnings' if warnings else 'ok'
+        # Source folder gone (or left as a noted leftover); point "Open Folder" at
+        # the folder that now holds the zip.
+        return self._finish(status, warnings, sets, zip_path, self.output_folder)
+
+    def _finish(self, status, warnings, sets, zip_path, project_folder):
+        """Assemble the render result and mirror it into shared state."""
+        self.state['zip_path'] = zip_path
+        self.state['project_folder'] = project_folder
+        self.state['warnings'] = warnings
+        self.state['status'] = status
+        return {
+            'status': status,
+            'warnings': warnings,
+            'project_folder': project_folder,
             'zip_path': zip_path,
             'sets': sets,
         }
-        self.state['zip_path'] = zip_path
-        self.state['project_folder'] = self.output_folder
-        return result
+
+    def _remove_folder_robust(self, folder):
+        """Delete `folder`, tolerating Finder droppings (.DS_Store / ._*) that
+        external (exFAT) volumes collect and that can re-appear between the
+        recursive walk and the final rmdir → Errno 66 'Directory not empty'
+        (seen live 2026-08-31 on a Seagate). Scrub and retry once; return True on
+        success, False if it still won't go (caller downgrades to a warning)."""
+        for attempt in (1, 2):
+            try:
+                shutil.rmtree(folder)
+                print(f'[Exporter] Source folder removed after verified zip: {folder}')
+                return True
+            except OSError as e:
+                if attempt == 2:
+                    print(f'[Exporter] WARNING: could not remove {folder}: {e}')
+                    return False
+                for junk in (glob.glob(os.path.join(folder, '**', '.DS_Store'), recursive=True)
+                             + glob.glob(os.path.join(folder, '**', '._*'), recursive=True)):
+                    try:
+                        os.remove(junk)
+                    except OSError:
+                        pass
 
     # ── zip verification (must pass before deleting the only other copy) ───────
     def _verify_zip(self, zip_path, sets):
@@ -267,11 +326,18 @@ class StemExporter:
         return wavs
 
     # ── T11 raw-differs guard ──────────────────────────────────────────────────
-    def _assert_raw_differs(self, project_folder):
-        """At least one stem present in BOTH 01_With_FX and 02_Raw must differ in
-        PCM audio content — proof the 'Bypass Effect Plug-ins' box actually took
-        effect. If every shared stem is byte-identical, FX were NOT bypassed →
-        raise, do not ship."""
+    def _raw_differs_warnings(self, project_folder):
+        """Compare 01_With_FX vs 02_Raw in PCM content. Returns a list of warning
+        dicts (empty when the sets genuinely differ, proving 'Bypass Effect
+        Plug-ins' took effect). NON-FATAL by design (staged-success border sits
+        above this): the stems are the deliverable and already exist on disk, so a
+        failed comparison is a caveat, not a reason to bin a good render.
+
+        Two caveat cases, both surfaced as warnings:
+          • no shared names  → can't verify bypass at all.
+          • zero differ      → identical sets: EITHER the project has no effects
+            (fine) OR bypass silently didn't take (a real bug). We can't tell which
+            without a project parser, so we ask the user to eyeball one raw stem."""
         wet_dir = os.path.join(project_folder, '01_With_FX')
         raw_dir = os.path.join(project_folder, '02_Raw')
         wet = {os.path.basename(p): p for p in glob.glob(os.path.join(wet_dir, '*.wav'))}
@@ -285,16 +351,17 @@ class StemExporter:
             raw[base + ext] = p
         shared = sorted(set(wet) & set(raw))
         if not shared:
-            raise RuntimeError('Raw guard: no stems with matching names in both '
-                               'sets to compare — cannot verify FX bypass.')
-        differs = 0
-        for name in shared:
-            if self._pcm_fingerprint(wet[name]) != self._pcm_fingerprint(raw[name]):
-                differs += 1
+            return [{'stage': 'raw_guard', 'message':
+                'Could not verify FX bypass: no matching stem names in both sets.'}]
+        differs = sum(1 for n in shared
+                      if self._pcm_fingerprint(wet[n]) != self._pcm_fingerprint(raw[n]))
         if differs == 0:
-            raise RuntimeError('Raw guard: 02_Raw is identical to 01_With_FX on '
-                               'every shared stem — FX were NOT bypassed. Not shipping.')
+            return [{'stage': 'raw_guard', 'message':
+                'The With-FX and Raw sets came out identical. Either this project '
+                'has no effects (fine to ship) or FX bypass did not take — check '
+                'one raw stem before delivering.'}]
         print(f'[Exporter] Raw guard OK: {differs}/{len(shared)} shared stems differ.')
+        return []
 
     @staticmethod
     def _pcm_fingerprint(wav_path):

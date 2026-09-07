@@ -177,8 +177,11 @@ function statusCellHTML(entry) {
       return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span></div>`;
     if (rt.status === 'failed')
       return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed — see Inbox</span></div>`;
-    if (rt.status === 'done')
+    if (rt.status === 'done') {
+      if (rt.warning)
+        return `<div class="status st-warn" data-reveal="${esc(entry.id)}" title="${esc(rt.warning)}"><span>Done — with warnings</span></div>`;
       return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span></div>`;
+    }
   }
   if (entry.ext === 'als') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
   const lr = meta[entry.path];
@@ -328,13 +331,17 @@ function pollUntilDone(entry) {
       }
       const sets = data.sets || {};
       const stemCount = Object.values(sets).reduce((a, f) => a + (f || []).length, 0);
+      const warns = data.warnings || [];
       meta[entry.path] = {
         date: new Date().toISOString(),
         folder: data.project_folder || outputFolder,
         zipPath: data.zip_path || null,
         stemCount,
+        warnings: warns,
       };
-      runtime[entry.id] = { status: 'done' };
+      runtime[entry.id] = warns.length
+        ? { status: 'done', warning: warns[0].message }
+        : { status: 'done' };
       await window.electronAPI.saveRenderMeta(meta);
       await window.electronAPI.saveHistory({
         project: entry.path.split('/').pop(),
@@ -440,14 +447,20 @@ async function loadInbox() {
     const date = new Date(m.date).toLocaleDateString('en-US', {
       month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
     });
+    const isWarning = m.level === 'warning';
+    const color = isWarning ? '#e8c07a' : '#e88a8a';
+    const icon = isWarning
+      ? `<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 15v.5" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`
+      : `<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="${color}" stroke-width="1.5"/><path d="M7 7l6 6M13 7l-6 6" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+    const heading = isWarning
+      ? `Completed with warnings — ${esc(m.project || 'project')}`
+      : `Render failed — ${esc(m.project || 'project')}`;
     const item = document.createElement('div');
     item.className = 'history-item';
     item.innerHTML = `
-      <div class="history-icon">
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2L1 17h18L10 2z" stroke="#e88a8a" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 14v.5" stroke="#e88a8a" stroke-width="1.5" stroke-linecap="round"/></svg>
-      </div>
+      <div class="history-icon">${icon}</div>
       <div class="history-info">
-        <div class="history-name">Render failed — ${esc(m.project || 'project')}</div>
+        <div class="history-name">${heading}</div>
         <div class="history-meta">${esc(m.reason || '')}</div>
         <div class="history-meta">${date}</div>
       </div>`;

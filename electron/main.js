@@ -73,7 +73,10 @@ function startPythonServer() {
   });
 
   pythonProcess.stderr.on('data', (data) => {
-    console.error('[Python Error]', data.toString());
+    // stderr carries Flask's routine request log (every /health and /progress
+    // poll) alongside genuine tracebacks — label it neutrally; real errors are
+    // recognizable by their content.
+    console.error('[Python]', data.toString());
   });
 
   pythonProcess.on('close', (code) => {
@@ -82,12 +85,37 @@ function startPythonServer() {
 }
 
 const EXPORT_FAILURE_MARKER = '[[EXPORT_FAILURE]]';
+const EXPORT_WARNING_MARKER = '[[EXPORT_WARNING]]';
 
 // Inspect one server stdout line; on the failure marker, fire a single native macOS
 // notification (project name + friendly reason). Electron's Notification shows even
 // when the app is backgrounded — which is the whole point (renders run invisibly).
 // Malformed payloads are logged and ignored, never thrown.
 function handleServerLine(line) {
+  // Non-fatal warnings from a SUCCESSFUL render (staged-success): record a
+  // distinct, calmer inbox note (level 'warning') — no failure notification.
+  const wAt = line.indexOf(EXPORT_WARNING_MARKER);
+  if (wAt >= 0) {
+    try {
+      const payload = JSON.parse(line.slice(wAt + EXPORT_WARNING_MARKER.length).trim());
+      const project = (payload && payload.project) || 'project';
+      const warns = (payload && payload.warnings) || [];
+      const messages = store.get('messages', []);
+      messages.unshift({
+        project,
+        level: 'warning',
+        reason: warns.map(w => w.message).join(' '),
+        detail: { warnings: warns },
+        date: new Date().toISOString(),
+      });
+      if (messages.length > 50) messages.splice(50);
+      store.set('messages', messages);
+    } catch (e) {
+      console.error('[Inbox] could not parse EXPORT_WARNING payload:', e);
+    }
+    return;
+  }
+
   const at = line.indexOf(EXPORT_FAILURE_MARKER);
   if (at < 0) return;
   let payload;
@@ -113,6 +141,7 @@ function handleServerLine(line) {
     const messages = store.get('messages', []);
     messages.unshift({
       project,
+      level: 'error',
       reason,
       detail: (payload && payload.detail) || null,
       date: new Date().toISOString(),

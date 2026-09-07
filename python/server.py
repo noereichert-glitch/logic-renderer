@@ -34,6 +34,7 @@ GENERIC_FAILURE_REASON = (
 # Single-line stdout marker the Electron main process watches to fire the native
 # failure notification. Emitted ONCE, only on a terminal render failure.
 EXPORT_FAILURE_MARKER = '[[EXPORT_FAILURE]]'
+EXPORT_WARNING_MARKER = '[[EXPORT_WARNING]]'
 
 export_state = {
     'status_title': 'Waiting…',
@@ -65,6 +66,9 @@ def _reset_state(output_folder):
         'project_folder': None,
         'sets': {},
         'output_folder': output_folder,
+        # Staged-success outcome: 'ok' | 'ok_warnings' | None(=failed via 'error').
+        'status': None,
+        'warnings': [],
         # Critical-failure signal (set only in run_export's terminal except).
         'project': None,
         'reason': None,
@@ -126,9 +130,23 @@ def export():
             export_state['sets'] = result.get('sets', {})
             export_state['zip_path'] = result.get('zip_path')
             export_state['project_folder'] = result.get('project_folder')
+            export_state['status'] = result.get('status', 'ok')
+            warns = result.get('warnings', []) or []
+            export_state['warnings'] = warns
             export_state['progress'] = 100
-            export_state['status_title'] = 'Export complete'
-            export_state['status_sub'] = 'Zip ready in your output folder'
+            if warns:
+                # A successful render that carries caveats (identical passes, zip
+                # skipped, leftover folder…). NOT a failure — the deliverable
+                # exists — but surfaced to the inbox via its own marker so the app
+                # records a distinct, non-alarming note.
+                export_state['status_title'] = 'Export complete — with warnings'
+                export_state['status_sub'] = warns[0]['message']
+                print(EXPORT_WARNING_MARKER + json.dumps(
+                    {'project': os.path.basename(file_path),
+                     'warnings': warns}), flush=True)
+            else:
+                export_state['status_title'] = 'Export complete'
+                export_state['status_sub'] = 'Zip ready in your output folder'
             export_state['done'] = True
         except Exception as e:
             print(f'[Server] Export failed: {e}')
