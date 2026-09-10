@@ -20,7 +20,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from stem_exporter import StemExporter
-from logic_render import resolve_project_path
+from logic_render import (resolve_project_path, RenderCancelled,
+                          fire_bounce_abort_chord)
 
 app = Flask(__name__)
 CORS(app)
@@ -51,6 +52,9 @@ export_state = {
 # Concurrency guard: only one export may run at a time.
 _export_lock = threading.Lock()
 _export_in_flight = False
+# Cooperative cancel flag for the in-flight export (set by /export/cancel,
+# cleared at each export start; checked between steps and inside long waits).
+_cancel_event = threading.Event()
 
 
 def _reset_state(output_folder):
@@ -116,6 +120,7 @@ def export():
 
     print(f'[Server] One-Click export: {file_path} -> {output_folder}')
     _reset_state(output_folder)
+    _cancel_event.clear()
 
     def run_export():
         global export_state, _export_in_flight
@@ -125,6 +130,7 @@ def export():
                 output_folder=output_folder,
                 state=export_state,
                 headless=headless,
+                cancel_event=_cancel_event,
             )
             result = exporter.run()
             export_state['sets'] = result.get('sets', {})
@@ -148,6 +154,15 @@ def export():
                 export_state['status_title'] = 'Export complete'
                 export_state['status_sub'] = 'Zip ready in your output folder'
             export_state['done'] = True
+        except RenderCancelled as e:
+            # User-initiated stop — its own outcome, NOT a failure: no error, no
+            # failure notification, no inbox entry. Partial output was cleaned up
+            # by the exporter before this propagated.
+            print(f'[Server] Export cancelled by the user ({e}).')
+            export_state['done'] = True
+            export_state['status'] = 'cancelled'
+            export_state['status_title'] = 'Render cancelled'
+            export_state['status_sub'] = 'Stopped by you — partial files cleaned up'
         except Exception as e:
             print(f'[Server] Export failed: {e}')
             export_state['done'] = True
@@ -175,6 +190,28 @@ def export():
 
     threading.Thread(target=run_export, daemon=True).start()
     return jsonify({'started': True})
+
+
+@app.route('/export/cancel', methods=['POST'])
+def export_cancel():
+    """Request a cooperative cancel of the in-flight export. Takes effect at the
+    next check: within ~1s inside the long waits (load / bounce — mid-bounce the
+    bridge aborts Logic's bounce first), or at the next between-step gate."""
+    with _export_lock:
+        if not _export_in_flight:
+            return jsonify({'cancelling': False, 'reason': 'no export in progress'})
+    _cancel_event.set()
+    export_state['status_sub'] = 'Cancelling…'
+    print('[Server] Cancel requested — stopping at the next safe point.', flush=True)
+    # Mid-bounce, DON'T wait for the render thread to notice the flag — it can be
+    # deaf for up to ~15s inside an in-flight AX call against a pegged Logic
+    # (live 2026-09-10: 16s from POST to abort). Fire Logic's ⌘. abort NOW from
+    # our own thread; the render thread's cleanup catches up when it surfaces.
+    # (A duplicate chord later at an idle Logic is a no-op.)
+    if str(export_state.get('status_title', '')).startswith('Pass'):
+        threading.Thread(target=fire_bounce_abort_chord,
+                         kwargs={"quartz_only": True}, daemon=True).start()
+    return jsonify({'cancelling': True})
 
 
 @app.route('/export/progress', methods=['GET'])

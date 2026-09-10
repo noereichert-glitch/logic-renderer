@@ -230,8 +230,11 @@ function renderList() {
         <div class="mod">${fmtDate(st.mtimeMs)}</div>
         ${statusCellHTML(entry)}
         <div class="actions">
-          <button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
-            title="${outputFolder ? (entry.ext === 'als' ? 'Ableton renderer not connected yet' : 'Render stems') : 'Choose an output folder first'}">Render</button>
+          ${busy
+            ? `<button class="btn-render" data-cancel="${esc(entry.id)}"
+                 title="${rt.status === 'queued' ? 'Remove from the render queue' : 'Stop this render — Logic quits cleanly, partial files are cleaned up'}">Cancel</button>`
+            : `<button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
+                 title="${outputFolder ? (entry.ext === 'als' ? 'Ableton renderer not connected yet' : 'Render stems') : 'Choose an output folder first'}">Render</button>`}
           <button class="btn-remove" data-remove="${esc(entry.id)}" title="Remove from stemma (alias goes to Trash; original untouched)">✕</button>
         </div>`;
       rowEls.set(entry.id, row);
@@ -241,6 +244,8 @@ function renderList() {
 
   list.querySelectorAll('[data-render]').forEach(b =>
     b.addEventListener('click', () => enqueue([b.dataset.render])));
+  list.querySelectorAll('[data-cancel]').forEach(b =>
+    b.addEventListener('click', () => cancelEntry(b.dataset.cancel)));
   list.querySelectorAll('[data-remove]').forEach(b =>
     b.addEventListener('click', () => removeEntry(b.dataset.remove)));
   list.querySelectorAll('[data-reveal]').forEach(el =>
@@ -264,6 +269,30 @@ function renderList() {
   $('foot-summary').textContent =
     `${entries.length} project${entries.length !== 1 ? 's' : ''} · ${fmtBytes(totalBytes)}` +
     (queue.length ? ` · ${queue.length} queued` : '');
+}
+
+// Cancel: a QUEUED row is simply dequeued (nothing in flight); the ACTIVE row
+// asks the backend for a cooperative abort — Logic quits cleanly, partial files
+// are removed, and the row returns to Ready ('cancelled' outcome: no history
+// entry, no inbox alarm). The rest of the queue continues.
+const cancelPending = new Set(); // ids whose "Cancelling…" must not be clobbered
+
+async function cancelEntry(id) {
+  if (queue.includes(id)) {
+    queue = queue.filter(q => q !== id);
+    delete runtime[id];
+    renderList();
+    return;
+  }
+  if (id === activeId) {
+    cancelPending.add(id);
+    runtime[id] = { status: 'rendering', detail: 'Cancelling…' };
+    const entry = entries.find(e => e.id === id);
+    if (entry) updateRowStatus(entry);
+    try {
+      await fetch(`${API}/export/cancel`, { method: 'POST' });
+    } catch (e) { /* backend unreachable — the poll loop will surface it */ }
+  }
 }
 
 // ── Render queue (strictly serial — Logic can only run one export) ───────────
@@ -317,13 +346,24 @@ function pollUntilDone(entry) {
         data = await res.json();
       } catch (e) { return; } // backend busy — keep polling
       if (!data.done) {
-        const detail = data.status_title || 'Rendering…';
+        // While a cancel is pending, keep showing "Cancelling…" — the backend's
+        // status_title still reads "Pass 1/2 …" until the abort lands, which
+        // made the label flash and revert (seen live 2026-09-10).
+        const detail = cancelPending.has(entry.id)
+          ? 'Cancelling…' : (data.status_title || 'Rendering…');
         runtime[entry.id] = { status: 'rendering', detail };
         updateRowStatus(entry);
         setFootProgress(entry.name, detail, data.progress || 0);
         return;
       }
       clearInterval(poller);
+      cancelPending.delete(entry.id);
+      if (data.status === 'cancelled') {
+        // User cancel: row returns to Ready — no meta, no history, no alarm.
+        delete runtime[entry.id];
+        resolve();
+        return;
+      }
       if (data.error) {
         runtime[entry.id] = { status: 'failed', detail: data.error };
         resolve();

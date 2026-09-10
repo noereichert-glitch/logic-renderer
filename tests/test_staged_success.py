@@ -74,6 +74,27 @@ class TestRawDiffersWarnings(StagedSuccessBase):
         self.assertEqual(self.ex._raw_differs_warnings(self.proj), [])
 
 
+class TestCleanupCancelled(StagedSuccessBase):
+    def test_removes_all_partial_output_and_empty_folder(self):
+        # Loose root WAVs + both partial sets must vanish; per-render folder too
+        # (it ends up empty). The user's output folder above it is untouched.
+        _wav(os.path.join(self.proj, 'loose.wav'), b'\x01')
+        self._pair('Kick', b'\x01', b'\x02')
+        self.ex._cleanup_cancelled(self.proj)
+        self.assertFalse(os.path.exists(self.proj))
+        self.assertTrue(os.path.isdir(self.tmp))
+
+    def test_leaves_foreign_files_and_folder_alone(self):
+        # A non-WAV foreign file in the render folder is NOT ours to delete —
+        # cleanup removes our sets but keeps the folder (rmdir refuses: not empty).
+        with open(os.path.join(self.proj, 'notes.txt'), 'w') as f:
+            f.write('user file')
+        self._pair('Kick', b'\x01', b'\x02')
+        self.ex._cleanup_cancelled(self.proj)
+        self.assertTrue(os.path.exists(os.path.join(self.proj, 'notes.txt')))
+        self.assertFalse(os.path.exists(self.wet))
+
+
 class TestRemoveFolderRobust(StagedSuccessBase):
     def test_plain_delete(self):
         self._pair('Kick', b'\x01', b'\x02')

@@ -44,6 +44,7 @@ import zipfile
 from logic_render import (
     LogicRenderBridge,
     LogicCrashedError,
+    RenderCancelled,
     dismiss_macos_crash_reporter,
     resolve_project_path,
 )
@@ -64,7 +65,8 @@ MAX_PASS_ATTEMPTS = 3
 
 
 class StemExporter:
-    def __init__(self, file_path, output_folder, state, headless=True):
+    def __init__(self, file_path, output_folder, state, headless=True,
+                 cancel_event=None):
         self.file_path = file_path
         self.output_folder = output_folder
         self.state = state
@@ -72,6 +74,13 @@ class StemExporter:
         # focus steal, cursor never moves (Tier 0, docs/2026-06-28/). Pass
         # headless=False to fall back to the legacy frontmost+keystroke path.
         self.headless = headless
+        # Cooperative cancel (threading.Event from /export/cancel). Checked between
+        # steps here and once per tick inside the bridge's long waits.
+        self.cancel_event = cancel_event
+
+    def _check_cancel(self, where):
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise RenderCancelled(f'cancelled {where}')
 
     # ── state helpers ────────────────────────────────────────────────────────
     def _set_status(self, title, sub='', progress=None):
@@ -91,49 +100,61 @@ class StemExporter:
         os.makedirs(project_folder, exist_ok=True)
 
         self._set_status('Launching Logic Pro…', 'Opening project', progress=5)
-        bridge = LogicRenderBridge(headless=self.headless)
+        bridge = LogicRenderBridge(headless=self.headless,
+                                   cancel_event=self.cancel_event)
         bridge.launch(self.file_path)
 
-        # ONE Logic session for BOTH passes. try/finally guarantees a clean quit.
+        # ONE Logic session for BOTH passes. Inner try/finally guarantees a clean
+        # quit; the outer except turns a user cancel into a tidy exit — Logic is
+        # already quit by the finally, then the attempt's partial output is removed
+        # and RenderCancelled propagates (its own outcome, not a failure).
         try:
-            if not bridge.wait_for_logic_ready():
-                raise RuntimeError('Logic Pro did not finish loading in time.')
-
-            # Clear any leftover macOS crash-reporter dialog so it can't steal focus.
-            dismiss_macos_crash_reporter()
-
-            # Pass 1 — 01_With_FX (Bypass Effect Plug-ins OFF → wet)
-            self._set_status('Pass 1/2 — With FX',
-                             'Exporting all tracks with plugins', progress=15)
-            self._run_pass_with_retry(bridge, project_folder, project_name,
-                                      bypass_fx=False, pass_label='Pass 1/2 — With FX')
-            sort_wavs_into_subfolder(
-                src_folder=project_folder, subfolder_name='01_With_FX',
-                exclude_group_wavs=False, group_track_names=[],
-            )
-            self._validate_set(project_folder, '01_With_FX')
-            self.state['progress'] = 50
-
-            # Pass 2 — 02_Raw (Bypass Effect Plug-ins ON → dry). Same Logic session.
-            self._set_status('Pass 2/2 — Raw',
-                             'Exporting dry stems (plugins bypassed)', progress=55)
-            self._run_pass_with_retry(bridge, project_folder, project_name,
-                                      bypass_fx=True, pass_label='Pass 2/2 — Raw')
-            sort_wavs_into_subfolder(
-                src_folder=project_folder, subfolder_name='02_Raw',
-                exclude_group_wavs=False, group_track_names=[],
-                filename_suffix=RAW_FILENAME_SUFFIX,
-            )
-            self._validate_set(project_folder, '02_Raw')
-            self.state['progress'] = 85
-        finally:
-            self._set_status('Closing Logic Pro…', 'Quitting cleanly')
-            t_quit = time.time()
             try:
-                bridge.quit_logic()
-            except Exception as e:
-                print(f'[Exporter] WARNING: clean quit failed: {e}')
-            print(f'[Exporter] Logic quit in {time.time()-t_quit:.1f}s.')
+                if not bridge.wait_for_logic_ready():
+                    raise RuntimeError('Logic Pro did not finish loading in time.')
+
+                # Clear any leftover macOS crash-reporter dialog so it can't steal focus.
+                dismiss_macos_crash_reporter()
+
+                self._check_cancel('before Pass 1')
+                # Pass 1 — 01_With_FX (Bypass Effect Plug-ins OFF → wet)
+                self._set_status('Pass 1/2 — With FX',
+                                 'Exporting all tracks with plugins', progress=15)
+                self._run_pass_with_retry(bridge, project_folder, project_name,
+                                          bypass_fx=False, pass_label='Pass 1/2 — With FX')
+                sort_wavs_into_subfolder(
+                    src_folder=project_folder, subfolder_name='01_With_FX',
+                    exclude_group_wavs=False, group_track_names=[],
+                )
+                self._validate_set(project_folder, '01_With_FX')
+                self.state['progress'] = 50
+
+                self._check_cancel('between the passes')
+                # Pass 2 — 02_Raw (Bypass Effect Plug-ins ON → dry). Same Logic session.
+                self._set_status('Pass 2/2 — Raw',
+                                 'Exporting dry stems (plugins bypassed)', progress=55)
+                self._run_pass_with_retry(bridge, project_folder, project_name,
+                                          bypass_fx=True, pass_label='Pass 2/2 — Raw')
+                sort_wavs_into_subfolder(
+                    src_folder=project_folder, subfolder_name='02_Raw',
+                    exclude_group_wavs=False, group_track_names=[],
+                    filename_suffix=RAW_FILENAME_SUFFIX,
+                )
+                self._validate_set(project_folder, '02_Raw')
+                self.state['progress'] = 85
+            finally:
+                self._set_status('Closing Logic Pro…', 'Quitting cleanly')
+                t_quit = time.time()
+                try:
+                    bridge.quit_logic()
+                except Exception as e:
+                    print(f'[Exporter] WARNING: clean quit failed: {e}')
+                print(f'[Exporter] Logic quit in {time.time()-t_quit:.1f}s.')
+            # Last cancel window: after the passes, before packaging begins.
+            self._check_cancel('before packaging')
+        except RenderCancelled:
+            self._cleanup_cancelled(project_folder)
+            raise
 
         # ── Post-render staged-success ladder ─────────────────────────────────
         # BORDER: everything below here is past the point where the deliverable
@@ -303,6 +324,31 @@ class StemExporter:
                 if not bridge.wait_for_logic_ready():
                     raise RuntimeError('Logic did not reload after a crash.')
                 dismiss_macos_crash_reporter()
+
+    def _cleanup_cancelled(self, project_folder):
+        """After a user cancel (Logic already quit): remove everything this
+        attempt created so no debris remains — loose WAVs in the render root,
+        the partial 01_With_FX / 02_Raw sets, and the per-render folder itself
+        if that leaves it empty. Only ever touches the per-render folder we
+        created; never the user's output folder or any zip from a previous run."""
+        removed = 0
+        for w in glob.glob(os.path.join(project_folder, '*.wav')):
+            try:
+                os.remove(w)
+                removed += 1
+            except OSError:
+                pass
+        for sub in ('01_With_FX', '02_Raw'):
+            d = os.path.join(project_folder, sub)
+            if os.path.isdir(d):
+                removed += len(glob.glob(os.path.join(d, '*.wav')))
+                shutil.rmtree(d, ignore_errors=True)
+        try:
+            os.rmdir(project_folder)  # only succeeds if now empty — by design
+        except OSError:
+            pass
+        print(f'[Exporter] Cancelled — cleaned up {removed} partial WAV(s); '
+              f'no debris left behind.', flush=True)
 
     def _cleanup_stale_wavs(self, project_folder):
         """Remove loose WAVs in the project root (partial output from a crashed

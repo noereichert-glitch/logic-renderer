@@ -184,6 +184,108 @@ class LogicCrashedError(RuntimeError):
     relaunch and retry."""
 
 
+class RenderCancelled(RuntimeError):
+    """Raised when the user cancels the render (cooperative abort via the
+    cancel_event). Between steps this fires at the next check; mid-bounce the
+    bridge first aborts Logic's bounce (⌘. — Logic's sanctioned mid-export
+    abort, owner-confirmed), then raises. The orchestrator's try/finally still
+    quits Logic cleanly (never saving); the orchestrator then removes the
+    attempt's partial output. NOT a failure — its own outcome."""
+
+
+def fire_bounce_abort_chord(proc: str = None, quartz_only: bool = False):
+    """Send Logic's ⌘. bounce-abort NOW, standalone — callable from ANY thread
+    (the /export/cancel endpoint fires it directly).
+
+    PRIMARY (Quartz, learned 2026-09-10): post the chord DIRECTLY to Logic's
+    process via CGEventPostToPid — no System Events, no focus change. Every
+    System-Events route measured a fixed ~16-19s click→abort, because SE serves
+    ONE client at a time and an in-flight AX scan against a CPU-pegged bouncing
+    Logic jams the counter INTERNALLY (client-side timeouts don't free it) for
+    exactly as long as Logic takes to answer. Raw HID-level events skip that
+    queue entirely — and Logic never even comes forward.
+    FALLBACK: the old System-Events frontmost flick + keystroke/key-code chord
+    (works, just slow while SE is jammed). Never raises.
+
+    Packaging note: the Quartz path needs pyobjc (pip: pyobjc-framework-Quartz);
+    installed in the dev env 2026-09-10 — add to the bundled-server build when
+    packaging. Absent pyobjc, the fallback covers it."""
+    proc = proc or LOGIC_PROCESS_NAME
+    try:
+        import Quartz  # pyobjc — see packaging note above
+        # Pid via the native workspace API — a pgrep subprocess inexplicably
+        # returned empty from the endpoint thread (live 2026-09-10) while the
+        # identical call succeeded a second later from the worker; NSWorkspace
+        # has no such moods (no subprocess, no PATH, no text parsing).
+        pid = None
+        try:
+            import AppKit
+            for a in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+                if str(a.localizedName()) == proc:
+                    pid = int(a.processIdentifier())
+                    break
+        except Exception:
+            pass
+        if pid is None:
+            out = subprocess.run(['pgrep', '-x', proc], capture_output=True,
+                                 text=True, timeout=5)
+            pid = int(out.stdout.split()[0]) if out.stdout.strip() else None
+        if pid:
+            KEY_PERIOD = 47
+            down = Quartz.CGEventCreateKeyboardEvent(None, KEY_PERIOD, True)
+            up = Quartz.CGEventCreateKeyboardEvent(None, KEY_PERIOD, False)
+            Quartz.CGEventSetFlags(down, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventSetFlags(up, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventPostToPid(pid, down)
+            time.sleep(0.05)
+            Quartz.CGEventPostToPid(pid, up)
+            print('[Exporter] bounce abort: posted Cmd-Period directly to Logic '
+                  '(Quartz, no focus change).', flush=True)
+            time.sleep(0.8)
+            return
+        if quartz_only:
+            # Redundant fast lane (the /export/cancel thread): its process
+            # listings come back empty in that thread context (live 2026-09-10,
+            # both NSWorkspace and pgrep) — bow out quietly; the worker's own
+            # abort (full chain) lands within ~1s anyway. Never run the SE flick
+            # from here: it would steal focus AFTER the bounce is already dead.
+            print('[Exporter] bounce abort (fast lane): no pid from this thread '
+                  '— leaving it to the worker.', flush=True)
+            return
+        print('[Exporter] bounce abort: Logic pid not found — falling back to '
+              'System Events chord.', flush=True)
+    except Exception as e:
+        print(f'[Exporter] bounce abort: Quartz path unavailable ({e}) — '
+              f'falling back to System Events chord.', flush=True)
+    try:
+        prior = _frontmost_app_name()
+        _set_app_frontmost(proc)
+        front = False
+        for _ in range(10):
+            try:
+                if _osascript(
+                    f'tell application "System Events" to return frontmost '
+                    f'of process "{_as_str(proc)}"', timeout=5) == 'true':
+                    front = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+            _set_app_frontmost(proc)
+        _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            keystroke "." using {{command down}}
+            delay 0.3
+            key code 47 using {{command down}}
+        end tell''', timeout=10)
+        print(f'[Exporter] bounce abort: sent Cmd-Period abort chord '
+              f'(keystroke + key code; Logic frontmost={front}).', flush=True)
+        time.sleep(0.8)
+        if prior and prior != proc:
+            _set_app_frontmost(prior)
+    except Exception as e:
+        print(f'[Exporter] bounce abort: chord failed ({e}).', flush=True)
+
+
 class DialogGuardPause(RuntimeError):
     """Raised (headless only) when the DialogGuard decides a live dialog must STOP
     the job:
@@ -293,10 +395,17 @@ class LogicRenderBridge:
     Mirrors FLRenderBridge so the orchestrator reads the same. Context-manager
     capable."""
 
-    def __init__(self, headless: bool = True):
+    # Class-level default so instances constructed without __init__ (test
+    # doubles) still read as "no cancel plumbing".
+    cancel_event = None
+
+    def __init__(self, headless: bool = True, cancel_event=None):
         self.app_path = find_logic()
         self.process_name = LOGIC_PROCESS_NAME
         self._proc = None
+        # Cooperative cancel: a threading.Event set by the server's /export/cancel.
+        # Checked once per tick in the two long waits (load + bounce); None = never.
+        self.cancel_event = cancel_event
         # headless (default on): drive the export by AX element VALUE + backgrounded
         # element clicks (no `set frontmost`, cursor never moves). The destination's
         # two irreducible keystroke chords (⌘⇧G / Return) are focus-MASKED: fired
@@ -410,13 +519,13 @@ class LogicRenderBridge:
         self._focus_sampler = None
 
     # — scan-timing (headless only, inert) —
-    def _timed_handle_dialogs(self, context=None):
+    def _timed_handle_dialogs(self, context=None, scan_timeout=15.0):
         """Wrap one per-tick DialogGuard scan and accumulate its wall-cost. Behaves
         EXACTLY like _handle_dialogs (same return value; a DialogGuardPause still
         propagates) — the finally records timing on both the normal and raise paths."""
         t0 = time.time()
         try:
-            return self._handle_dialogs(context)
+            return self._handle_dialogs(context, scan_timeout=scan_timeout)
         finally:
             self._scan_count += 1
             self._scan_ms_total += (time.time() - t0) * 1000.0
@@ -516,6 +625,8 @@ class LogicRenderBridge:
             return "no"
         end tell'''
         while time.time() < end:
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise RenderCancelled('cancelled while Logic was loading')
             # DialogGuard runs OUTSIDE the broad try below so a DialogGuardPause
             # (unknown/terminal dialog) propagates and aborts the wait instead of
             # being swallowed. Transient scan errors are handled inside _handle_dialogs.
@@ -565,7 +676,11 @@ class LogicRenderBridge:
             _set_app_frontmost(proc)
             time.sleep(0.15)
             flick_msg = _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                set w to window "Open"
+                -- Bind w when the export dialog exists; tolerated absent so bodies
+                -- that don't reference w (e.g. the bounce-abort chord) still run.
+                try
+                    set w to window "Open"
+                end try
 {body_script}
             end tell''', timeout=30)
             # A poll fallback fired (sheet didn't appear/vanish in ~3s) — always
@@ -876,6 +991,9 @@ class LogicRenderBridge:
             except Exception as e:
                 msg = str(e)
                 transient = ('-1728' in msg or '-1719' in msg
+                             or '-2753' in msg  # "variable w is not defined" — the
+                             # tolerant w-bind in _run_masked_keys turns a vanished
+                             # export dialog into this signature
                              or 'timed out' in msg
                              or 'Export dialog did not open' in msg)
                 if not transient or attempt == 3:
@@ -910,6 +1028,25 @@ class LogicRenderBridge:
                 pass
             time.sleep(0.4)
         return False
+
+    def _abort_bounce(self):
+        """Best-effort abort of an in-flight bounce, Logic's sanctioned way.
+        Primary: element-click a Cancel/Stop button on the bounce-progress window
+        (backgrounded, no focus steal). Fallback: the ⌘. (Command-Period) abort
+        chord — macOS/Logic's standard cancel, owner-corrected 2026-09-10 (an
+        earlier ctrl-C description sent a chord Logic ignores, making cancels
+        crawl through the quit path). Focus-masked like our other chords. Never
+        raises — the caller raises RenderCancelled regardless, and quit_logic's
+        DialogGuard handles whatever dialog state remains."""
+        # CHORD ONLY. Ordering learned live 2026-09-10: an `entire contents`
+        # button-search against a CPU-pegged bouncing Logic just burns its full
+        # timeout and finds nothing (the bounce dialog has NO button — owner-
+        # observed), while the ⌘. chord aborts instantly when delivered right.
+        # NOTE: /export/cancel ALSO fires this chord immediately from its own
+        # thread (fire_bounce_abort_chord below) so cancels don't wait for this
+        # thread to surface from an in-flight dialog scan (16s dead air, live
+        # 2026-09-10). A second chord at an already-idle Logic is a no-op.
+        fire_bounce_abort_chord(self.process_name)
 
     def _close_export_dialog_if_open(self):
         """Best-effort tidy-up between export-dialog attempts: cancel a stray
@@ -987,7 +1124,7 @@ class LogicRenderBridge:
                 'actual_dest_root': dest,
                 'colliding_filename': None}
 
-    def _scan_blocking_dialogs(self):
+    def _scan_blocking_dialogs(self, timeout: float = 15.0):
         """DETECTOR (read-only): every blocking pop-up on the Logic process — free
         AXDialog windows AND sheets — as a list of {title, body, buttons[]}. Element
         reads only; NO clicks here. Best-effort: transient AX errors → [].
@@ -1088,7 +1225,7 @@ class LogicRenderBridge:
             # whitespace and would eat that leading separator, collapsing the 3-field
             # record to 2 and dropping it. We split records on '\n' and skip blanks
             # below, so the trailing '\n\n' is harmless without any strip.
-            out = _osascript(script, timeout=15, strip=False)
+            out = _osascript(script, timeout=timeout, strip=False)
         except Exception:
             return []
         dialogs = []
@@ -1159,7 +1296,7 @@ class LogicRenderBridge:
               f'buttons={dlg.get("buttons", [])} -> {decision.action}{btn} '
               f'rule={decision.rule_id} reason={decision.reason!r}')
 
-    def _handle_dialogs(self, context=None):
+    def _handle_dialogs(self, context=None, scan_timeout=15.0):
         """EXECUTOR (headless only). Detect → decide() → do ONLY what it returns:
           • IGNORE → leave it.
           • CLICK <button> → element-click that exact button (backgrounded). If the
@@ -1174,7 +1311,7 @@ class LogicRenderBridge:
             return []
         locale = self._active_locale()
         handled = []
-        for dlg in self._scan_blocking_dialogs():
+        for dlg in self._scan_blocking_dialogs(timeout=scan_timeout):
             decision = guard.decide(dlg, locale=locale, context=context)
             self._log_dialog(dlg, locale, decision)
             handled.append((dlg, decision))
@@ -1257,6 +1394,11 @@ class LogicRenderBridge:
         while time.time() < end:
             if not self.is_alive():
                 raise LogicCrashedError('Logic exited during export.')
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                # Abort the bounce Logic's own sanctioned way first, then raise —
+                # the orchestrator quits Logic (never saving) and cleans partials.
+                self._abort_bounce()
+                raise RenderCancelled('cancelled during the export bounce')
             # Headless: also run the DialogGuard each tick so a blocking dialog that
             # appears AFTER the Export click — "The export operation failed.",
             # disk-full, etc. — is detected → decided → handled the instant it shows
@@ -1267,7 +1409,14 @@ class LogicRenderBridge:
             # transient scan errors and returns [] when nothing blocks, so a healthy
             # bounce (no AXDialog/sheet) is untouched. Legacy path never calls this.
             if self.headless:
-                self._timed_handle_dialogs()
+                # SHORT scan leash during the bounce (4s, not 15): System Events
+                # serves ONE Apple-event client at a time, so a long scan against
+                # a CPU-pegged bouncing Logic blocks EVERYTHING behind it in the
+                # queue — including the user's cancel chord (live 2026-09-10:
+                # 19s click→abort with the 15s leash, even fired from a parallel
+                # thread). Capping the scan bounds the whole queue's latency; a
+                # timed-out scan is just skipped and retried next tick.
+                self._timed_handle_dialogs(scan_timeout=4)
             snap = {}
             try:
                 for name in os.listdir(output_folder):

@@ -225,6 +225,14 @@ class DialogGuardTests(unittest.TestCase):
         self.assertEqual(d.action, Decision.CLICK)
         self.assertEqual(d.rule_id, 'save_changes_on_quit')
 
+    # ================ C11 — disk too slow (bounce killed) ====================
+    def test_C11_disk_too_slow_fails_job(self):
+        # Live capture 2026-09-10 (external Seagate). The bounce is already dead
+        # when this shows, so the rule must clear the modal AND stop the job.
+        b = ('Disk is too slow or System Overload. (-10010)')
+        d = self.g.decide(self.dlg(b, ['OK']), 'en')
+        self.assertClick(d, 'OK', terminal=True)
+
     # ================ C10 — auto-save recovery prompt at load ================
     def test_C10_autosave_clicks_Saved(self):
         # Live capture 2026-07-22: nameless dialog after a crashed render.

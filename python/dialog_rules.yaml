@@ -68,6 +68,14 @@ rules:
   - OK
   body_keys:
   - The export operation failed.
+- id: disk_too_slow
+  action: fail_job
+  user_message: "The disk couldn't keep up and Logic stopped the export (common on slow external drives). Try a faster/internal drive or close heavy apps, then try again."
+  note: 'first seen live 2026-09-10 during a cancelled bounce to an external Seagate; also fires organically mid-bounce on slow disks, where the bounce is already dead — so fail_job, not dismiss.'
+  click_keys:
+  - OK
+  body_keys:
+  - Disk is too slow
 - id: newer_version_blocking
   action: fail_job
   user_message: "This project was made in a newer version of Logic Pro and can't be opened. Update Logic Pro to the latest version, then try again."

@@ -56,7 +56,7 @@ class ExecutorTests(unittest.TestCase):
         self.b._click_dialog_button = lambda label: (self.clicks.append(label) or True)
         self.b._active_locale = lambda: 'en'
         self._queue = []
-        self.b._scan_blocking_dialogs = lambda: list(self._queue)
+        self.b._scan_blocking_dialogs = lambda **kw: list(self._queue)
 
     def feed(self, *dialogs):
         self._queue = list(dialogs)
@@ -166,7 +166,7 @@ class PostExportScanTests(unittest.TestCase):
         failed = fill(self.guard, body_key(self.guard, 'export_failed'), 'en')
         calls = {'n': 0}
 
-        def scan():
+        def scan(**kw):
             calls['n'] += 1
             return ([] if calls['n'] < 2
                     else [{'title': '', 'body': failed, 'buttons': ['OK']}])
@@ -183,7 +183,7 @@ class PostExportScanTests(unittest.TestCase):
     def test_unknown_postexport_dialog_failsafe_pause(self):
         # An unrecognized post-export dialog (e.g. the macOS permission alert seen in
         # the live C7 run) → fail-safe PAUSE, nothing clicked.
-        self.b._scan_blocking_dialogs = lambda: [{
+        self.b._scan_blocking_dialogs = lambda **kw: [{
             'title': '', 'buttons': ['OK'],
             'body': "The file couldn’t be saved because you don’t have permission."}]
         with self.assertRaises(DialogGuardPause) as cm:
@@ -195,7 +195,7 @@ class PostExportScanTests(unittest.TestCase):
 
     def test_healthy_bounce_no_dialog_returns_normally(self):
         # No blocking dialog (scan []), a stable WAV set → returns, nothing clicked.
-        self.b._scan_blocking_dialogs = lambda: []
+        self.b._scan_blocking_dialogs = lambda **kw: []
         self._wav()
         self.b.wait_for_export_complete(self.tmp, timeout=5,
                                         required_stable=2, poll=0.01)
@@ -205,7 +205,7 @@ class PostExportScanTests(unittest.TestCase):
         # Legacy path must NOT call the guard during the bounce wait.
         self.b.headless = False
         scanned = {'n': 0}
-        self.b._scan_blocking_dialogs = lambda: (scanned.__setitem__('n', scanned['n'] + 1) or [])
+        self.b._scan_blocking_dialogs = lambda **kw: (scanned.__setitem__('n', scanned['n'] + 1) or [])
         self._wav()
         self.b.wait_for_export_complete(self.tmp, timeout=5,
                                         required_stable=2, poll=0.01)
