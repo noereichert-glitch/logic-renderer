@@ -166,7 +166,7 @@ function fmtDate(ms) {
 }
 
 // ── List rendering ───────────────────────────────────────────────────────────
-const CHECK_SVG = '<svg class="check" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#7fd4a8" stroke-width="1.4"/><path d="M5 8.2 7.2 10.4 11 6.4" stroke="#7fd4a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CHECK_SVG = '<svg class="check" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.4"/><path d="M5 8.2 7.2 10.4 11 6.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 function statusCellHTML(entry) {
   const rt = runtime[entry.id];
@@ -559,7 +559,7 @@ async function loadInbox() {
       month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
     });
     const isWarning = m.level === 'warning';
-    const color = isWarning ? '#e8c07a' : '#e88a8a';
+    const color = isWarning ? '#a8791a' : '#c5473f';
     const icon = isWarning
       ? `<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 15v.5" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`
       : `<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="${color}" stroke-width="1.5"/><path d="M7 7l6 6M13 7l-6 6" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
