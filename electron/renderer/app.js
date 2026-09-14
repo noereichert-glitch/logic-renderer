@@ -173,8 +173,13 @@ function statusCellHTML(entry) {
   if (entry.missing) return '<div class="status st-warn"><span>Original not found</span></div>';
   if (rt) {
     if (rt.status === 'queued') return '<div class="status st-idle"><span>Queued</span></div>';
-    if (rt.status === 'rendering')
-      return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span></div>`;
+    if (rt.status === 'rendering') {
+      const lw = rt.liveWarnings || [];
+      const badge = lw.length
+        ? `<span class="st-warn" title="${esc(lw.map(x => x.message).join('\n'))}">&nbsp;⚠${lw.length}</span>`
+        : '';
+      return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span>${badge}</div>`;
+    }
     if (rt.status === 'failed')
       return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed — see Inbox</span></div>`;
     if (rt.status === 'done') {
@@ -351,7 +356,10 @@ function pollUntilDone(entry) {
         // made the label flash and revert (seen live 2026-09-10).
         const detail = cancelPending.has(entry.id)
           ? 'Cancelling…' : (data.status_title || 'Rendering…');
-        runtime[entry.id] = { status: 'rendering', detail };
+        // Live warnings (surfaced as discovered, e.g. silent stems after Pass 1)
+        // ride along so the row can flag them WHILE cancelling is still cheap.
+        runtime[entry.id] = { status: 'rendering', detail,
+                              liveWarnings: data.warnings || [] };
         updateRowStatus(entry);
         setFootProgress(entry.name, detail, data.progress || 0);
         return;

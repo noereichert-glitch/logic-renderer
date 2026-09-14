@@ -74,6 +74,73 @@ class TestRawDiffersWarnings(StagedSuccessBase):
         self.assertEqual(self.ex._raw_differs_warnings(self.proj), [])
 
 
+class TestTrackStates(StagedSuccessBase):
+    def test_file_matches_track_naming_rules(self):
+        m = StemExporter._file_matches_track
+        self.assertTrue(m('A. One_1.wav', 'A. One'))
+        self.assertTrue(m('Sum 6_1_raw.wav', 'Sum 6'))
+        self.assertTrue(m('Kick.wav', 'Kick'))
+        self.assertTrue(m('Kick_12.wav', 'Kick'))
+        self.assertFalse(m('Kick_1.wav', 'Kick 2'))
+        self.assertFalse(m('Kickdrum_1.wav', 'Kick'))
+
+    def test_exclude_muted_removes_only_muted_stems(self):
+        self._pair('Kick', b'\x01', b'\x02')
+        self._pair('Scrap', b'\x03', b'\x04')
+        removed = self.ex._exclude_muted(self.proj, '01_With_FX', ['Scrap'])
+        self.assertEqual(removed, ['Scrap.wav'])
+        self.assertTrue(os.path.exists(os.path.join(self.wet, 'Kick.wav')))
+        self.assertFalse(os.path.exists(os.path.join(self.wet, 'Scrap.wav')))
+
+    def test_completeness_flags_track_without_file(self):
+        self._pair('Kick', b'\x01', b'\x02')
+        warns = self.ex._completeness_warnings(
+            self.proj, '01_With_FX', ['Kick', 'H. Eight', 'Scrap'], muted_names=['Scrap'])
+        self.assertEqual(len(warns), 1)
+        self.assertIn('H. Eight', warns[0]['message'])
+        self.assertNotIn('Scrap', warns[0]['message'])   # muted → not expected
+
+    def test_completeness_clean(self):
+        self._pair('Kick', b'\x01', b'\x02')
+        self.assertEqual(self.ex._completeness_warnings(
+            self.proj, '01_With_FX', ['Kick'], []), [])
+
+
+class TestLiveChecks(StagedSuccessBase):
+    def test_silent_wav_detected(self):
+        _wav(os.path.join(self.wet, 'Empty.wav'), b'\x00' * 64)
+        _wav(os.path.join(self.wet, 'Loud.wav'), b'\x00\x01' * 32)
+        warns = self.ex._silence_warnings(self.proj, '01_With_FX')
+        self.assertEqual(len(warns), 1)
+        self.assertIn('Empty.wav', warns[0]['message'])
+        self.assertNotIn('Loud.wav', warns[0]['message'])
+
+    def test_no_silent_no_warning(self):
+        _wav(os.path.join(self.wet, 'Loud.wav'), b'\x07\x07')
+        self.assertEqual(self.ex._silence_warnings(self.proj, '01_With_FX'), [])
+
+    def test_pass_symmetry_clean(self):
+        self._pair('Kick', b'\x01', b'\x02')
+        self._pair('Snare', b'\x03', b'\x04')
+        self.assertEqual(self.ex._pass_symmetry_warnings(self.proj), [])
+
+    def test_pass_symmetry_missing_raw_stem(self):
+        # Sum-8 shape: With-FX produced a stem the Raw pass silently lacks.
+        self._pair('Kick', b'\x01', b'\x02')
+        _wav(os.path.join(self.wet, 'Sum 8.wav'), b'\x05')
+        warns = self.ex._pass_symmetry_warnings(self.proj)
+        self.assertEqual(len(warns), 1)
+        self.assertIn('missing', warns[0]['message'])
+        self.assertIn('Sum 8.wav', warns[0]['message'])
+
+    def test_warn_mirrors_into_state_immediately(self):
+        # Layer 1 contract: a warning is visible in shared state the moment it
+        # is recorded — not only at render end.
+        self.ex._warnings = []
+        self.ex._warn({'stage': 't', 'message': 'live!'})
+        self.assertEqual(self.ex.state['warnings'][0]['message'], 'live!')
+
+
 class TestCleanupCancelled(StagedSuccessBase):
     def test_removes_all_partial_output_and_empty_folder(self):
         # Loose root WAVs + both partial sets must vanish; per-render folder too

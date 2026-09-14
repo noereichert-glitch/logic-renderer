@@ -193,6 +193,55 @@ class RenderCancelled(RuntimeError):
     attempt's partial output. NOT a failure — its own outcome."""
 
 
+def _find_pid(proc: str):
+    """Logic's pid via NSWorkspace (pyobjc), falling back to pgrep. None if
+    not running or lookups unavailable."""
+    try:
+        import AppKit
+        for a in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+            if str(a.localizedName()) == proc:
+                return int(a.processIdentifier())
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(['pgrep', '-x', proc], capture_output=True,
+                             text=True, timeout=5)
+        return int(out.stdout.split()[0]) if out.stdout.strip() else None
+    except Exception:
+        return None
+
+
+# Virtual key codes for the Quartz key poster.
+KEY_S, KEY_DOWN, KEY_UP = 1, 125, 126
+
+
+def post_keys_to_pid(pid: int, keys, gap: float = 0.25) -> bool:
+    """Post key presses straight into a process via Quartz CGEventPostToPid —
+    no System Events, no focus change. `keys` = key codes, or (code, mod)
+    tuples with mod in {'cmd', 'alt'}. Proven live 2026-09-14: posted keys
+    reach Logic (S toggles solo on the selected track; Option+S = Solo Off for
+    All), where AX click/AXPress/set-value and even posted MOUSE clicks all
+    silently fail on Logic's custom header buttons. False if pyobjc is absent."""
+    try:
+        import Quartz
+    except Exception:
+        return False
+    flags = {'cmd': Quartz.kCGEventFlagMaskCommand,
+             'alt': Quartz.kCGEventFlagMaskAlternate}
+    for k in keys:
+        code, mod = (k if isinstance(k, tuple) else (k, None))
+        down = Quartz.CGEventCreateKeyboardEvent(None, code, True)
+        up = Quartz.CGEventCreateKeyboardEvent(None, code, False)
+        if mod in flags:
+            Quartz.CGEventSetFlags(down, flags[mod])
+            Quartz.CGEventSetFlags(up, flags[mod])
+        Quartz.CGEventPostToPid(pid, down)
+        time.sleep(0.05)
+        Quartz.CGEventPostToPid(pid, up)
+        time.sleep(gap)
+    return True
+
+
 def fire_bounce_abort_chord(proc: str = None, quartz_only: bool = False):
     """Send Logic's ⌘. bounce-abort NOW, standalone — callable from ANY thread
     (the /export/cancel endpoint fires it directly).
@@ -1028,6 +1077,86 @@ class LogicRenderBridge:
                 pass
             time.sleep(0.4)
         return False
+
+    # — track-header state (mute / solo / names), read right after load —
+    # Each header is a UI element described "Track N “Name”" holding checkboxes
+    # described "Mute" / "Solo" and a text field whose description is the exact
+    # track name (probed live 2026-09-14). Read while Logic is IDLE (cheap);
+    # never during a bounce.
+    def read_track_states(self):
+        """Return [{'name', 'muted', 'soloed', 'selected'}] in visible header
+        order; [] on any failure (the render must never depend on this)."""
+        try:
+            out = _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                set out to ""
+                set els to entire contents of window 1
+                repeat with e in els
+                    try
+                        if class of e is checkbox and description of e is "Mute" then
+                            set par to (value of attribute "AXParent" of e)
+                            set nm to ""
+                            set so to "0"
+                            set se to "0"
+                            repeat with c in (every UI element of par)
+                                try
+                                    if class of c is text field then set nm to description of c
+                                    if class of c is checkbox and description of c is "Solo" then set so to (value of c as text)
+                                    if class of c is radio button and description of c is "Has Focus" then set se to (value of c as text)
+                                end try
+                            end repeat
+                            set out to out & nm & tab & (value of e as text) & tab & so & tab & se & linefeed
+                        end if
+                    end try
+                end repeat
+                return out
+            end tell''', timeout=90, strip=False)
+        except Exception as e:
+            print(f'[Exporter] track-state read failed ({e}) — skipping mute/solo handling.',
+                  flush=True)
+            return []
+        tracks = []
+        for line in (out or '').splitlines():
+            parts = line.split('\t')
+            if len(parts) != 4 or not parts[0]:
+                continue
+            tracks.append({'name': parts[0],
+                           'muted': parts[1].strip() == '1',
+                           'soloed': parts[2].strip() == '1',
+                           'selected': parts[3].strip() == '1'})
+        return tracks
+
+    def clear_solos(self, tracks=None):
+        """Un-solo everything with ONE global key command — Option+S ("Solo
+        Off for All", owner-supplied 2026-09-14). DELIVERY MATTERS (live
+        experiments 2026-09-14): Logic's key-command engine only honors the
+        chord as a System Events `keystroke … using {option down}` with Logic
+        frontmost — Quartz pid-posted keys (even with a physical Option-down
+        event) are ignored, as are AX click/AXPress/set-value and posted mouse
+        clicks on the header buttons. So this is a focus-MASKED chord like the
+        export-destination ⌘⇧G: idle-gated, Logic front for an instant, focus
+        handed straight back. Pre-flight only (Logic idle — no SE jam).
+        Only fired when ≥1 solo is lit: with none lit, Option+S would SOLO
+        something instead. Verified by a re-read; project file untouched.
+        Returns (cleared_names, still_lit_names)."""
+        tracks = tracks if tracks is not None else self.read_track_states()
+        soloed = [t['name'] for t in tracks if t['soloed']]
+        if not soloed:
+            return [], []
+        try:
+            if self.headless:
+                self._run_masked_keys('keystroke "s" using {option down}')
+            else:
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                    set frontmost to true
+                    delay 0.5
+                    keystroke "s" using {{option down}}
+                end tell''', timeout=20)
+        except Exception as e:
+            print(f'[Exporter] clear_solos chord failed ({e}).', flush=True)
+            return [], soloed
+        time.sleep(0.8)
+        still = [t['name'] for t in self.read_track_states() if t['soloed']]
+        return [n for n in soloed if n not in still], still
 
     def _abort_bounce(self):
         """Best-effort abort of an in-flight bounce, Logic's sanctioned way.

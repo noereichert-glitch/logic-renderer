@@ -36,6 +36,7 @@ about format is forced from here.
 import glob
 import hashlib
 import os
+import re
 import shutil
 import struct
 import time
@@ -90,6 +91,15 @@ class StemExporter:
             self.state['progress'] = progress
         print(f'[Exporter] {title} — {sub}')
 
+    def _warn(self, w):
+        """Record one warning dict {'stage', 'message', ...} — LIVE: it lands in
+        the shared state immediately (the UI polls /export/progress every second),
+        not bundled at render end. Owner design 2026-09-10: warnings surface AS
+        THEY BECOME KNOWABLE, while cancelling is still cheap."""
+        self._warnings.append(w)
+        self.state['warnings'] = list(self._warnings)
+        print(f'[Exporter] WARNING: {w["message"]}', flush=True)
+
     # ── main entrypoint ──────────────────────────────────────────────────────
     def run(self):
         # Resolve package- vs folder-style projects to the inner .logicx (§11) so
@@ -98,6 +108,11 @@ class StemExporter:
         project_name = os.path.splitext(os.path.basename(self.file_path))[0]
         project_folder = os.path.join(self.output_folder, project_name)
         os.makedirs(project_folder, exist_ok=True)
+
+        # Live warnings channel — filled via _warn as findings appear, mirrored
+        # into shared state each time so the UI shows them mid-render.
+        self._warnings = []
+        self.state['warnings'] = []
 
         self._set_status('Launching Logic Pro…', 'Opening project', progress=5)
         bridge = LogicRenderBridge(headless=self.headless,
@@ -117,6 +132,39 @@ class StemExporter:
                 dismiss_macos_crash_reporter()
 
                 self._check_cancel('before Pass 1')
+
+                # Track states (owner decisions 2026-09-14): read every header's
+                # mute/solo/name while Logic is idle. SOLO is cleared in-session
+                # (never saved) — a lit solo silences stack/DMD tracks and Trim
+                # Silence then erases them from the export entirely (the Sum 8 /
+                # Eleven ghost). MUTED tracks are left out of the delivery after
+                # each pass. Names also power the completeness check.
+                self._set_status('Checking tracks…', 'Reading mute/solo state', progress=10)
+                tracks = bridge.read_track_states()
+                self._track_names = [t['name'] for t in tracks]
+                self._muted_names = [t['name'] for t in tracks if t['muted']]
+                soloed = [t['name'] for t in tracks if t['soloed']]
+                if soloed:
+                    cleared, still = bridge.clear_solos(tracks)
+                    shown = ', '.join(soloed[:5]) + ('…' if len(soloed) > 5 else '')
+                    if still:
+                        self._warn({'stage': 'solo', 'message':
+                            f'Solo is active on {", ".join(still[:5])} and could NOT be '
+                            f'cleared — stack/DMD tracks may be dropped from this export. '
+                            f'Un-solo and save, then re-render.'})
+                    else:
+                        self._warn({'stage': 'solo', 'message':
+                            f'Solo was active on {shown} — cleared for the export '
+                            f'(Solo Off for All); your project file is untouched.'})
+                if self._muted_names:
+                    shown = ', '.join(self._muted_names[:5]) + ('…' if len(self._muted_names) > 5 else '')
+                    self._warn({'stage': 'muted', 'message':
+                        f'{len(self._muted_names)} muted track(s) will be left out of '
+                        f'the delivery: {shown}.'})
+                if tracks:
+                    print(f'[Exporter] tracks: {len(tracks)} read, '
+                          f'{len(self._muted_names)} muted, {len(soloed)} solo\'d.', flush=True)
+
                 # Pass 1 — 01_With_FX (Bypass Effect Plug-ins OFF → wet)
                 self._set_status('Pass 1/2 — With FX',
                                  'Exporting all tracks with plugins', progress=15)
@@ -126,8 +174,17 @@ class StemExporter:
                     src_folder=project_folder, subfolder_name='01_With_FX',
                     exclude_group_wavs=False, group_track_names=[],
                 )
+                self._exclude_muted(project_folder, '01_With_FX', self._muted_names)
                 self._validate_set(project_folder, '01_With_FX')
                 self.state['progress'] = 50
+                for w in self._completeness_warnings(project_folder, '01_With_FX',
+                                                     self._track_names, self._muted_names):
+                    self._warn(w)
+                # Halfway checkpoint (owner design 2026-09-10): silent stems are
+                # knowable NOW — surface them while cancelling still saves Pass 2
+                # and the packaging. Warning only, never a failure.
+                for w in self._silence_warnings(project_folder, '01_With_FX'):
+                    self._warn(w)
 
                 self._check_cancel('between the passes')
                 # Pass 2 — 02_Raw (Bypass Effect Plug-ins ON → dry). Same Logic session.
@@ -140,8 +197,16 @@ class StemExporter:
                     exclude_group_wavs=False, group_track_names=[],
                     filename_suffix=RAW_FILENAME_SUFFIX,
                 )
+                self._exclude_muted(project_folder, '02_Raw', self._muted_names)
                 self._validate_set(project_folder, '02_Raw')
                 self.state['progress'] = 85
+                # Second checkpoint: Raw-set silence + PASS SYMMETRY (Pass 1 is
+                # the prediction for Pass 2 — a count/name mismatch is a
+                # Sum-8-shaped anomaly, caught with no parser needed).
+                for w in self._silence_warnings(project_folder, '02_Raw'):
+                    self._warn(w)
+                for w in self._pass_symmetry_warnings(project_folder):
+                    self._warn(w)
             finally:
                 self._set_status('Closing Logic Pro…', 'Quitting cleanly')
                 t_quit = time.time()
@@ -161,17 +226,16 @@ class StemExporter:
         # (the stems) provably exists — both passes rendered and each _validate_set
         # passed above (a <2-stem set already raised → hard failure, correctly
         # BELOW the border). From here nothing FAILS the render: problems become
-        # warnings and the flow continues. Outcome = 'ok' | 'ok_warnings'; genuine
-        # failures only ever come from the exceptions raised above the border.
-        warnings = []
+        # warnings (via the LIVE _warn channel) and the flow continues. Outcome =
+        # 'ok' | 'ok_warnings'; genuine failures only ever come from exceptions
+        # raised above the border.
 
         # ② Raw-differs — quality flag, NO LONGER fatal. Identical passes ⇒ either
         # the project has no effects (fine) or FX bypass didn't take (a real bug we
         # can't yet distinguish without a project parser). Warn and continue.
         self._set_status('Verifying raw pass…', 'Confirming FX were bypassed', progress=88)
         for w in self._raw_differs_warnings(project_folder):
-            warnings.append(w)
-            print(f'[Exporter] WARNING: {w["message"]}')
+            self._warn(w)
 
         sets = {
             '01_With_FX': sorted(glob.glob(os.path.join(project_folder, '01_With_FX', '*.wav'))),
@@ -184,11 +248,10 @@ class StemExporter:
         try:
             zip_path = zip_project_folder(project_folder)
         except Exception as e:
-            warnings.append({'stage': 'zip', 'message':
+            self._warn({'stage': 'zip', 'message':
                 f'Stems rendered, but zipping failed ({e}). The stems are in the '
                 f'project folder.', 'path': project_folder})
-            print(f'[Exporter] WARNING: zipping failed: {e}')
-            return self._finish('ok_warnings', warnings, sets, None, project_folder)
+            return self._finish('ok_warnings', self._warnings, sets, None, project_folder)
 
         # ④ Verify the zip is a COMPLETE, valid copy BEFORE deleting the source.
         # If verify fails we SKIP the delete (folder is the only other copy), so
@@ -197,25 +260,24 @@ class StemExporter:
         try:
             self._verify_zip(zip_path, sets)
         except Exception as e:
-            warnings.append({'stage': 'zip_verify', 'message':
+            self._warn({'stage': 'zip_verify', 'message':
                 f'Stems rendered, but the zip could not be verified ({e}). The '
                 f'un-zipped stems in the project folder are intact.',
                 'path': project_folder})
-            print(f'[Exporter] WARNING: zip verify failed: {e}')
-            return self._finish('ok_warnings', warnings, sets, zip_path, project_folder)
+            return self._finish('ok_warnings', self._warnings, sets, zip_path, project_folder)
 
         # ⑤ Verified → delete the source folder, leaving only <project>.zip.
         # Purely janitorial — never fails the render.
         self._set_status('Cleaning up…', 'Removing the un-zipped stem folder', progress=99)
         if not self._remove_folder_robust(project_folder):
-            warnings.append({'stage': 'cleanup', 'message':
+            self._warn({'stage': 'cleanup', 'message':
                 'Render complete and zipped. Could not remove the leftover stem '
                 'folder — safe to delete by hand.', 'path': project_folder})
 
-        status = 'ok_warnings' if warnings else 'ok'
+        status = 'ok_warnings' if self._warnings else 'ok'
         # Source folder gone (or left as a noted leftover); point "Open Folder" at
         # the folder that now holds the zip.
-        return self._finish(status, warnings, sets, zip_path, self.output_folder)
+        return self._finish(status, self._warnings, sets, zip_path, self.output_folder)
 
     def _finish(self, status, warnings, sets, zip_path, project_folder):
         """Assemble the render result and mirror it into shared state."""
@@ -370,6 +432,131 @@ class StemExporter:
                 f'{subfolder}: expected ≥2 stems, found {len(wavs)}. The export '
                 f'likely produced a single mixdown instead of per-track stems.')
         return wavs
+
+    # ── track-state handling (mute / solo / completeness), parser-free ───────
+    @staticmethod
+    def _file_matches_track(filename, track_name):
+        """Does an exported WAV belong to `track_name`? Logic names exports
+        '<track>_<n>.wav' (and our Raw pass appends RAW_FILENAME_SUFFIX):
+        strip .wav, the raw suffix, then ONE trailing _<digits>, and compare."""
+        base, _ = os.path.splitext(filename)
+        if base.endswith(RAW_FILENAME_SUFFIX):
+            base = base[:-len(RAW_FILENAME_SUFFIX)]
+        base = re.sub(r'_\d+$', '', base)
+        return base == track_name
+
+    def _exclude_muted(self, project_folder, subfolder, muted_names):
+        """Owner decision 2026-09-14: muted tracks are left OUT of the delivery.
+        Logic's export ignores mute (renders them anyway), so remove their stems
+        from the set after the sort. Returns the list of removed filenames."""
+        removed = []
+        for p in sorted(glob.glob(os.path.join(project_folder, subfolder, '*.wav'))):
+            fn = os.path.basename(p)
+            if any(self._file_matches_track(fn, t) for t in muted_names):
+                try:
+                    os.remove(p)
+                    removed.append(fn)
+                except OSError:
+                    pass
+        return removed
+
+    def _completeness_warnings(self, project_folder, subfolder, track_names, muted_names):
+        """Every non-muted track in the header list should have produced a stem.
+        A track with no file = an EMPTY track (Logic exports only tracks with
+        regions), a type its export skips (folder stack, VCA…), or a genuine
+        drop (the Sum 8 / Eleven class). Informational, never fatal."""
+        files = [os.path.basename(p)
+                 for p in glob.glob(os.path.join(project_folder, subfolder, '*.wav'))]
+        missing = [t for t in track_names
+                   if t not in muted_names
+                   and not any(self._file_matches_track(f, t) for f in files)]
+        if not missing:
+            return []
+        shown = ', '.join(missing[:5]) + ('…' if len(missing) > 5 else '')
+        return [{'stage': f'completeness_{subfolder}',
+                 'message': f'{len(missing)} track(s) produced no stem ({shown}) — '
+                            f'empty tracks and folder stacks/VCAs never export; '
+                            f'anything else here deserves a look.'}]
+
+    # ── live mid-render checks (parser-free; warnings, never failures) ────────
+    @staticmethod
+    def _is_silent_wav(wav_path):
+        """True if the WAV's data chunk is entirely zero bytes (digital silence —
+        what Logic bounces for an empty/muted track). Hand-parsed RIFF like
+        _pcm_fingerprint; early-exits on the first non-zero byte. Unreadable or
+        non-RIFF files count as NOT silent (no false alarms)."""
+        try:
+            with open(wav_path, 'rb') as f:
+                riff = f.read(12)
+                if len(riff) < 12 or riff[0:4] != b'RIFF' or riff[8:12] != b'WAVE':
+                    return False
+                while True:
+                    hdr = f.read(8)
+                    if len(hdr) < 8:
+                        return True  # no data chunk found → nothing non-zero seen
+                    cid, size = hdr[0:4], struct.unpack('<I', hdr[4:8])[0]
+                    if cid == b'data':
+                        remaining = size
+                        while remaining > 0:
+                            chunk = f.read(min(1 << 20, remaining))
+                            if not chunk:
+                                return True
+                            if any(chunk):
+                                return False
+                            remaining -= len(chunk)
+                        return True
+                    f.seek(size + (size & 1), 1)
+        except OSError:
+            return False
+
+    def _silence_warnings(self, project_folder, subfolder):
+        """Scan one rendered set for all-silent stems. INFORMATIONAL without a
+        project parser (we can't yet tell expected silence — an empty scratch
+        track — from wrong silence); the point is the user sees it mid-render,
+        while cancelling still saves time. Returns a list of warning dicts."""
+        silent = [os.path.basename(p)
+                  for p in sorted(glob.glob(os.path.join(project_folder, subfolder, '*.wav')))
+                  if self._is_silent_wav(p)]
+        if not silent:
+            return []
+        shown = ', '.join(silent[:5]) + ('…' if len(silent) > 5 else '')
+        # NOTE (owner-observed 2026-09-14): Logic's per-track export IGNORES the
+        # mute button — muted tracks bounce with full audio. So silence here
+        # means an EMPTY track (no regions) or something genuinely wrong; mute
+        # is never the explanation. (The reverse surprise — muted scrap shipping
+        # WITH audio — is a parser-era pre-flight warning candidate.)
+        return [{'stage': f'silence_{subfolder}',
+                 'message': f'{subfolder}: {len(silent)} stem(s) rendered silent '
+                            f'({shown}) — expected only for empty tracks; '
+                            f'otherwise check before delivering.'}]
+
+    def _pass_symmetry_warnings(self, project_folder):
+        """Pass 2's stems should mirror Pass 1's names exactly (the _raw suffix
+        aside) — Pass 1 IS the prediction for Pass 2, no parser needed. A
+        mismatch is a Sum-8-shaped anomaly: Logic silently skipped or added a
+        track between the passes. Returns a list of warning dicts."""
+        wet = {os.path.basename(p)
+               for p in glob.glob(os.path.join(project_folder, '01_With_FX', '*.wav'))}
+        raw = set()
+        for p in glob.glob(os.path.join(project_folder, '02_Raw', '*.wav')):
+            base, ext = os.path.splitext(os.path.basename(p))
+            if base.endswith(RAW_FILENAME_SUFFIX):
+                base = base[:-len(RAW_FILENAME_SUFFIX)]
+            raw.add(base + ext)
+        missing = sorted(wet - raw)   # in With-FX, absent from Raw
+        extra = sorted(raw - wet)     # in Raw, absent from With-FX
+        out = []
+        if missing:
+            out.append({'stage': 'pass_symmetry',
+                        'message': f'Raw pass is missing {len(missing)} stem(s) '
+                                   f'that With-FX produced: {", ".join(missing[:5])}'
+                                   f'{"…" if len(missing) > 5 else ""}'})
+        if extra:
+            out.append({'stage': 'pass_symmetry',
+                        'message': f'Raw pass produced {len(extra)} stem(s) With-FX '
+                                   f'did not: {", ".join(extra[:5])}'
+                                   f'{"…" if len(extra) > 5 else ""}'})
+        return out
 
     # ── T11 raw-differs guard ──────────────────────────────────────────────────
     def _raw_differs_warnings(self, project_folder):
