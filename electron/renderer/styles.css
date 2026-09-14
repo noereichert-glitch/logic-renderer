@@ -124,6 +124,7 @@ button{font-family:inherit}
 .st-ok{color:var(--ok)} .st-sync{color:var(--accent-strong)}
 .st-idle{color:var(--text-3)} .st-warn{color:var(--warn)} .st-err{color:var(--err)}
 .st-done{color:var(--ok);cursor:pointer}
+.warn-badge{color:var(--warn);margin-left:6px;cursor:help;font-size:13px;line-height:1}
 .st-done:hover{text-decoration:underline}
 .ring{width:14px;height:14px;border-radius:50%;flex-shrink:0;
   border:2px solid rgba(155,127,212,.25);border-top-color:var(--accent-strong);animation:spin 1s linear infinite}

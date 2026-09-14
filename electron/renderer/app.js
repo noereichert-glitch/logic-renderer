@@ -182,17 +182,25 @@ function statusCellHTML(entry) {
     }
     if (rt.status === 'failed')
       return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed — see Inbox</span></div>`;
-    if (rt.status === 'done') {
-      if (rt.warning)
-        return `<div class="status st-warn" data-reveal="${esc(entry.id)}" title="${esc(rt.warning)}"><span>Done — with warnings</span></div>`;
-      return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span></div>`;
-    }
+    if (rt.status === 'done')
+      // Success looks like success (owner call 2026-09-14): green as always,
+      // with an amber ⚠ beside it when there were warnings — hover for the list.
+      return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span>${warnBadge(rt.warnings)}</div>`;
   }
   if (entry.ext === 'als') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
   const lr = meta[entry.path];
   if (lr)
-    return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span></div>`;
+    return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span>${warnBadge(lr.warnings)}</div>`;
   return '<div class="status st-idle"><span>Ready</span></div>';
+}
+
+// Amber ⚠ next to a green status; hovering lists every warning as bullets.
+// Empty string when there are none, so the badge simply isn't there.
+function warnBadge(warnings) {
+  const list = warnings || [];
+  if (!list.length) return '';
+  const tip = list.map(w => '• ' + (w.message || w)).join('\n');
+  return `<span class="warn-badge" title="${esc(tip)}">⚠</span>`;
 }
 
 // Update ONE row's status cell in place — no full-list rebuild, no hover
@@ -387,9 +395,7 @@ function pollUntilDone(entry) {
         stemCount,
         warnings: warns,
       };
-      runtime[entry.id] = warns.length
-        ? { status: 'done', warning: warns[0].message }
-        : { status: 'done' };
+      runtime[entry.id] = { status: 'done', warnings: warns };
       await window.electronAPI.saveRenderMeta(meta);
       await window.electronAPI.saveHistory({
         project: entry.path.split('/').pop(),
