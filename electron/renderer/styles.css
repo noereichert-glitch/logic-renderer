@@ -112,8 +112,11 @@ button{font-family:inherit}
 .badge{width:42px;height:42px;display:flex;align-items:center;justify-content:center;
   flex-shrink:0;border-radius:9px;font-family:'Poppins','Inter',sans-serif;font-weight:700;font-size:17px;
   filter:drop-shadow(0 1px 2px rgba(34,28,46,.12))}
-.badge.logicx,.badge.als{background:#ddd6e8;color:var(--accent)}
+.badge.logicx,.badge.als,.badge.flp{background:#ddd6e8;color:var(--accent)}
 .badge svg{width:42px;height:42px;display:block}
+.badge.flp .fruit{fill:#bcaecd}
+.badge.flp .crown{fill:#8f7ea8}
+.badge.flp .stem{stroke:#8f7ea8}
 .badge .wm{font-family:'Inter',-apple-system,sans-serif;font-weight:700;font-size:12.5px;letter-spacing:-.02em;line-height:1}
 .nm{display:flex;flex-direction:column;gap:3px;min-width:0}
 .nm b{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

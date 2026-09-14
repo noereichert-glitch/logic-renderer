@@ -10,7 +10,7 @@ const STORAGE_OUTPUT_FOLDER = 'stemExport.outputFolder';
 const SYNC_MS = 3000;          // folder mirror cadence
 const STATS_EVERY = 10;        // full du/mtime refresh every Nth sync
 
-const DAW_LABEL = { logicx: 'Logic Pro', als: 'Ableton Live' };
+const DAW_LABEL = { logicx: 'Logic Pro', als: 'Ableton Live', flp: 'FL Studio' };
 
 // ── State ────────────────────────────────────────────────────────────────────
 let entries = [];        // mirror of the folder: {id, aliasPath, path, name, ext, missing}
@@ -71,7 +71,10 @@ $('btn-change-stemma').addEventListener('click', async () => {
 });
 
 // ── Folder mirror ────────────────────────────────────────────────────────────
-function extOf(p) { return p.toLowerCase().endsWith('.als') ? 'als' : 'logicx'; }
+function extOf(p) {
+  const l = p.toLowerCase();
+  return l.endsWith('.als') ? 'als' : l.endsWith('.flp') ? 'flp' : 'logicx';
+}
 
 async function syncFolder(force) {
   const res = await window.electronAPI.scanStemma();
@@ -124,7 +127,7 @@ window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => {
   e.preventDefault();
   const paths = Array.from(e.dataTransfer.files)
-    .filter(f => f.name.endsWith('.logicx') || f.name.endsWith('.als') || f.type === '')
+    .filter(f => /\.(logicx|als|flp)$/i.test(f.name) || f.type === '')
     .map(f => f.path)
     .filter(Boolean);
   addOriginals(paths);
@@ -168,12 +171,21 @@ function fmtDate(ms) {
 // ── List rendering ───────────────────────────────────────────────────────────
 // DAW badges (owner picks 2026-09-14): original stemma glyphs, one line weight
 // on the lavender tile — Logic = outline platter (disc, grooves, spindle);
-// Live = the word itself (Live 12's icon IS just the word), Inter bold.
+// Live = the word itself (Live 12's icon IS just the word), Inter bold;
+// FL = the mango as flat border-less shapes (body traced from the real icon,
+// crown + stem on its coordinates), two lavender tones set in styles.css.
 // No image assets, recolours with the theme. Unknown types fall back to a letter.
 const PLATTER_SVG = '<svg viewBox="0 0 42 42" fill="none" aria-label="Logic Pro"><circle cx="21" cy="21" r="14" stroke="currentColor" stroke-width="1.6"/><circle cx="21" cy="21" r="10" stroke="currentColor" stroke-width="1" opacity=".55"/><circle cx="21" cy="21" r="6" stroke="currentColor" stroke-width="1" opacity=".55"/><circle cx="21" cy="21" r="1.7" fill="currentColor"/></svg>';
+const MANGO_SVG = '<svg viewBox="0 0 42 42" fill="none" aria-label="FL Studio">'
+  + '<path class="fruit" d="M15.4 36.9C13.2 36.2 11.9 33.8 11.2 30.0C10.7 25.7 11.1 21.4 11.9 18.2C12.7 15.5 15.1 14.0 18.3 13.6C22.6 13.3 26.9 15.0 27.9 19.3C28.4 23.6 25.9 27.9 22.9 31.4C20.8 33.9 17.8 37.0 15.4 36.9Z"/>'
+  + '<path class="crown" d="M11.5 14.0C12.1 9.9 17.1 8.0 20.9 11.3C20.4 14.0 16.2 15.8 11.5 14.0Z"/>'
+  + '<path class="crown" d="M24.7 12.6C27.6 11.3 31.1 14.0 31.1 21.0C28.3 19.9 25.9 17.4 24.7 12.6Z"/>'
+  + '<path class="crown" d="M22.9 11.5C20.5 11.0 17.9 12.2 17.9 15.2C17.9 18.5 19.8 20.4 21.5 20.8C23.3 20.2 25.9 17.7 25.8 14.3C25.7 12.6 24.4 11.4 22.9 11.5Z"/>'
+  + '<path class="stem" d="M23.0 11.4C23.5 9.1 25.3 6.8 28.0 5.5" stroke-width="1.7" stroke-linecap="round"/></svg>';
 function badgeGlyph(ext) {
   if (ext === 'logicx') return PLATTER_SVG;
   if (ext === 'als') return '<span class="wm" aria-label="Ableton Live">Live</span>';
+  if (ext === 'flp') return MANGO_SVG;
   return esc((ext || '?')[0].toUpperCase());
 }
 
@@ -198,7 +210,7 @@ function statusCellHTML(entry) {
       // with an amber ⚠ mark beside it when there were warnings.
       return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span>${warnMark(entry.id, rt.warnings)}</div>`;
   }
-  if (entry.ext === 'als') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
+  if (entry.ext !== 'logicx') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
   const lr = meta[entry.path];
   if (lr)
     return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span>${warnMark(entry.id, lr.warnings)}</div>`;
@@ -304,7 +316,7 @@ function renderList() {
             ? `<button class="btn-render" data-cancel="${esc(entry.id)}"
                  title="${rt.status === 'queued' ? 'Remove from the render queue' : 'Stop this render — Logic quits cleanly, partial files are cleaned up'}">Cancel</button>`
             : `<button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
-                 title="${outputFolder ? (entry.ext === 'als' ? 'Ableton renderer not connected yet' : 'Render stems') : 'Choose an output folder first'}">Render</button>`}
+                 title="${outputFolder ? (entry.ext === 'logicx' ? 'Render stems' : `${DAW_LABEL[entry.ext] || 'This'} renderer not connected yet`) : 'Choose an output folder first'}">Render</button>`}
           <button class="btn-remove" data-remove="${esc(entry.id)}" title="Remove from stemma (alias goes to Trash; original untouched)">✕</button>
         </div>
         ${rowWarnings(entry)}`;

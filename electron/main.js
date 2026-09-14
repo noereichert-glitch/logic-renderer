@@ -243,7 +243,7 @@ function ensureStemmaFolder() {
   return folder;
 }
 
-const SESSION_RE = /\.(logicx|als)$/i;
+const SESSION_RE = /\.(logicx|als|flp)$/i;
 // Plain session names AND Finder-alias names ("X.logicx alias",
 // duplicated ones get "X.logicx alias 2").
 const SESSION_OR_ALIAS_RE = /\.(logicx|als)(?: alias(?: \d+)?)?$/i;
@@ -373,7 +373,8 @@ async function listStemmaItems(folder) {
       name: name.replace(FINDER_ALIAS_SUFFIX_RE, ''),
       targetPath,
       missing,
-      ext: /\.als$/i.test(targetPath) || /\.als/i.test(name) ? 'als' : 'logicx',
+      ext: /\.als$/i.test(targetPath) || /\.als/i.test(name) ? 'als'
+         : /\.flp$/i.test(targetPath) || /\.flp/i.test(name) ? 'flp' : 'logicx',
     };
     // Dedupe by original: first healthy shortcut wins; a healthy one replaces
     // a dangling duplicate.
@@ -468,7 +469,7 @@ ipcMain.handle('meta:save', (event, metaMap) => {
 // dialog:openProject); .als is a plain file.
 ipcMain.handle('dialog:addProjects', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    filters: [{ name: 'DAW Project', extensions: ['logicx', 'als'] }],
+    filters: [{ name: 'DAW Project', extensions: ['logicx', 'als', 'flp'] }],
     properties: ['openFile', 'openDirectory', 'multiSelections']
   });
   return result.canceled ? [] : result.filePaths;
