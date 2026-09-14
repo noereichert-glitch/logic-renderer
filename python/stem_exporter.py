@@ -148,17 +148,17 @@ class StemExporter:
                     cleared, still = bridge.clear_solos(tracks)
                     shown = ', '.join(soloed[:5]) + ('…' if len(soloed) > 5 else '')
                     if still:
-                        self._warn({'stage': 'solo', 'message':
+                        self._warn({'stage': 'solo', 'names': still[:5], 'message':
                             f'Solo is active on {", ".join(still[:5])} and could NOT be '
                             f'cleared — stack/DMD tracks may be dropped from this export. '
                             f'Un-solo and save, then re-render.'})
                     else:
-                        self._warn({'stage': 'solo', 'message':
+                        self._warn({'stage': 'solo', 'names': soloed[:5], 'message':
                             f'Solo was active on {shown} — cleared for the export '
                             f'(Solo Off for All); your project file is untouched.'})
                 if self._muted_names:
                     shown = ', '.join(self._muted_names[:5]) + ('…' if len(self._muted_names) > 5 else '')
-                    self._warn({'stage': 'muted', 'message':
+                    self._warn({'stage': 'muted', 'names': self._muted_names[:5], 'message':
                         f'{len(self._muted_names)} muted track(s) will be left out of '
                         f'the delivery: {shown}.'})
                 if tracks:
@@ -473,7 +473,7 @@ class StemExporter:
         if not missing:
             return []
         shown = ', '.join(missing[:5]) + ('…' if len(missing) > 5 else '')
-        return [{'stage': f'completeness_{subfolder}',
+        return [{'stage': f'completeness_{subfolder}', 'names': missing[:5],
                  'message': f'{len(missing)} track(s) produced no stem ({shown}) — '
                             f'empty tracks and folder stacks/VCAs never export; '
                             f'anything else here deserves a look.'}]
@@ -525,7 +525,7 @@ class StemExporter:
         # means an EMPTY track (no regions) or something genuinely wrong; mute
         # is never the explanation. (The reverse surprise — muted scrap shipping
         # WITH audio — is a parser-era pre-flight warning candidate.)
-        return [{'stage': f'silence_{subfolder}',
+        return [{'stage': f'silence_{subfolder}', 'names': silent[:5],
                  'message': f'{subfolder}: {len(silent)} stem(s) rendered silent '
                             f'({shown}) — expected only for empty tracks; '
                             f'otherwise check before delivering.'}]
@@ -547,12 +547,12 @@ class StemExporter:
         extra = sorted(raw - wet)     # in Raw, absent from With-FX
         out = []
         if missing:
-            out.append({'stage': 'pass_symmetry',
+            out.append({'stage': 'pass_symmetry', 'names': missing[:5],
                         'message': f'Raw pass is missing {len(missing)} stem(s) '
                                    f'that With-FX produced: {", ".join(missing[:5])}'
                                    f'{"…" if len(missing) > 5 else ""}'})
         if extra:
-            out.append({'stage': 'pass_symmetry',
+            out.append({'stage': 'pass_symmetry', 'names': extra[:5],
                         'message': f'Raw pass produced {len(extra)} stem(s) With-FX '
                                    f'did not: {", ".join(extra[:5])}'
                                    f'{"…" if len(extra) > 5 else ""}'})

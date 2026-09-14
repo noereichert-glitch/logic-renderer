@@ -184,23 +184,69 @@ function statusCellHTML(entry) {
       return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed — see Inbox</span></div>`;
     if (rt.status === 'done')
       // Success looks like success (owner call 2026-09-14): green as always,
-      // with an amber ⚠ beside it when there were warnings — hover for the list.
-      return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span>${warnBadge(rt.warnings)}</div>`;
+      // with an amber ⚠ mark beside it when there were warnings.
+      return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span>${warnMark(entry.id, rt.warnings)}</div>`;
   }
   if (entry.ext === 'als') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
   const lr = meta[entry.path];
   if (lr)
-    return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span>${warnBadge(lr.warnings)}</div>`;
+    return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span>${warnMark(entry.id, lr.warnings)}</div>`;
   return '<div class="status st-idle"><span>Ready</span></div>';
 }
 
-// Amber ⚠ next to a green status; hovering lists every warning as bullets.
-// Empty string when there are none, so the badge simply isn't there.
-function warnBadge(warnings) {
+// The finished row's warning list, if any — appended as a full-width child
+// of the row (grid-column 1/-1) so it drops in under all the columns.
+function rowWarnings(entry) {
+  const rt = runtime[entry.id];
+  const list = (rt && rt.status === 'done') ? rt.warnings
+             : (!rt && meta[entry.path]) ? meta[entry.path].warnings : null;
+  return warnReveal(entry.id, list);
+}
+
+// ── Warnings on a finished row (owner design 2026-09-14) ─────────────────────
+// At rest: green status + one amber mark with a hover card. Click the mark and
+// the full list cascades in under the row — label column, hanging indent,
+// affected names brightened — pinned until clicked again. Open state survives
+// list rebuilds via openWarnings.
+const openWarnings = new Set();
+
+const WARN_LABEL = [
+  [/^solo/, 'Solo'], [/^muted/, 'Muted'], [/^completeness/, 'No stem'],
+  [/^silence/, 'Silent'], [/^pass_symmetry/, 'Mismatch'], [/^raw_guard/, 'Identical'],
+  [/^zip/, 'Zip'], [/^cleanup/, 'Cleanup'],
+];
+function warnLabel(stage) {
+  const hit = WARN_LABEL.find(([re]) => re.test(stage || ''));
+  return hit ? hit[1] : 'Note';
+}
+
+// Escape the message, then brighten each affected name (longest first so a
+// name that contains another isn't split in two).
+function emphasize(message, names) {
+  let html = esc(message || '');
+  for (const n of [...(names || [])].sort((a, b) => b.length - a.length)) {
+    const e = esc(n);
+    if (e) html = html.split(e).join(`<b>${e}</b>`);
+  }
+  return html;
+}
+
+function warnMark(id, warnings) {
   const list = warnings || [];
   if (!list.length) return '';
-  const tip = list.map(w => '• ' + (w.message || w)).join('\n');
-  return `<span class="warn-badge" title="${esc(tip)}">⚠</span>`;
+  const open = openWarnings.has(id);
+  const items = list.map(w => `<li>${esc(w.message || '')}</li>`).join('');
+  return `<span class="mark-wrap"><button class="mark" aria-expanded="${open}" data-warn-toggle="${esc(id)}" aria-label="${list.length} warnings">⚠<span class="chev">▾</span></button>
+    <div class="pop"><h4>${list.length} warning${list.length !== 1 ? 's' : ''} · click to pin</h4><ul>${items}</ul></div></span>`;
+}
+
+function warnReveal(id, warnings) {
+  const list = warnings || [];
+  if (!list.length) return '';
+  const open = openWarnings.has(id);
+  const items = list.map(w =>
+    `<div class="item"><span class="m">⚠</span><span class="k">${esc(warnLabel(w.stage))}</span><span>${emphasize(w.message, w.names)}</span></div>`).join('');
+  return `<div class="reveal" data-open="${open}" data-warn-region="${esc(id)}"><div><div class="inner">${items}</div></div></div>`;
 }
 
 // Update ONE row's status cell in place — no full-list rebuild, no hover
@@ -249,7 +295,8 @@ function renderList() {
             : `<button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
                  title="${outputFolder ? (entry.ext === 'als' ? 'Ableton renderer not connected yet' : 'Render stems') : 'Choose an output folder first'}">Render</button>`}
           <button class="btn-remove" data-remove="${esc(entry.id)}" title="Remove from stemma (alias goes to Trash; original untouched)">✕</button>
-        </div>`;
+        </div>
+        ${rowWarnings(entry)}`;
       rowEls.set(entry.id, row);
       list.appendChild(row);
     }
@@ -261,6 +308,16 @@ function renderList() {
     b.addEventListener('click', () => cancelEntry(b.dataset.cancel)));
   list.querySelectorAll('[data-remove]').forEach(b =>
     b.addEventListener('click', () => removeEntry(b.dataset.remove)));
+  list.querySelectorAll('[data-warn-toggle]').forEach(b =>
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();               // never trigger the row's reveal-zip
+      const id = b.dataset.warnToggle;
+      const open = !openWarnings.has(id);
+      if (open) openWarnings.add(id); else openWarnings.delete(id);
+      b.setAttribute('aria-expanded', String(open));
+      const region = list.querySelector(`[data-warn-region="${CSS.escape(id)}"]`);
+      if (region) region.dataset.open = String(open);
+    }));
   list.querySelectorAll('[data-reveal]').forEach(el =>
     el.addEventListener('click', () => {
       const entry = entries.find(e => e.id === el.dataset.reveal);
