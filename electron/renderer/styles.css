@@ -99,7 +99,7 @@ button{font-family:inherit}
 .cols{display:grid;grid-template-columns:1fr 90px 130px 215px 84px;gap:12px;
   padding:8px 24px;font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);
   border-bottom:1px solid var(--border-soft)}
-.cols :nth-child(2),.cols :nth-child(3),.cols :nth-child(4){text-align:right}
+.cols :nth-child(2),.cols :nth-child(3){text-align:right}
 
 /* ── file list ── */
 .list{flex:1;overflow-y:auto;padding:4px 12px 24px}
@@ -119,7 +119,7 @@ button{font-family:inherit}
 .size,.mod{font-family:var(--mono);font-size:11.5px;color:var(--text-2);text-align:right}
 
 /* status cell */
-.status{display:flex;align-items:center;justify-content:flex-end;gap:7px;font-size:11.5px;min-width:0}
+.status{display:flex;align-items:center;justify-content:flex-start;gap:7px;font-size:11.5px;min-width:0}
 .status span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .st-ok{color:var(--ok)} .st-sync{color:var(--accent-strong)}
 .st-idle{color:var(--text-3)} .st-warn{color:var(--warn)} .st-err{color:var(--err)}
@@ -134,7 +134,7 @@ button{font-family:inherit}
 .mark:focus-visible{outline:2px solid var(--accent-strong);outline-offset:2px}
 .mark .chev{display:inline-block;font-size:9px;transition:transform .28s var(--ease)}
 .mark[aria-expanded="true"] .chev{transform:rotate(180deg)}
-.pop{position:absolute;right:0;top:calc(100% + 8px);width:330px;background:var(--bg-2);border:1px solid var(--border);border-radius:10px;
+.pop{position:absolute;left:0;top:calc(100% + 8px);width:330px;background:var(--bg-2);border:1px solid var(--border);border-radius:10px;
   padding:12px 14px;box-shadow:0 12px 32px rgba(0,0,0,.45);z-index:5;text-align:left;cursor:auto;white-space:normal;color:var(--text-2);
   opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity .18s var(--ease),transform .18s var(--ease)}
 .mark-wrap:hover .pop,.mark-wrap:focus-within .pop{opacity:1;transform:translateY(0);pointer-events:auto}
