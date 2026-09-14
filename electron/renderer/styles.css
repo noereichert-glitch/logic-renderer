@@ -112,8 +112,9 @@ button{font-family:inherit}
 .badge{width:42px;height:42px;display:flex;align-items:center;justify-content:center;
   flex-shrink:0;border-radius:9px;font-family:'Poppins','Inter',sans-serif;font-weight:700;font-size:17px;
   filter:drop-shadow(0 1px 2px rgba(34,28,46,.12))}
-.badge.logicx{background:linear-gradient(135deg,#ddd6e8,#cdc3dc);color:var(--accent)}
-.badge.als{background:linear-gradient(135deg,#efe3c9,#e6d5ae);color:var(--warn)}
+.badge.logicx,.badge.als{background:#ddd6e8;color:var(--accent)}
+.badge svg{width:42px;height:42px;display:block}
+.badge .wm{font-family:'Inter',-apple-system,sans-serif;font-weight:700;font-size:12.5px;letter-spacing:-.02em;line-height:1}
 .nm{display:flex;flex-direction:column;gap:3px;min-width:0}
 .nm b{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nm span{font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

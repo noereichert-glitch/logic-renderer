@@ -166,6 +166,17 @@ function fmtDate(ms) {
 }
 
 // ── List rendering ───────────────────────────────────────────────────────────
+// DAW badges (owner picks 2026-09-14): original stemma glyphs, one line weight
+// on the lavender tile — Logic = outline platter (disc, grooves, spindle);
+// Live = the word itself (Live 12's icon IS just the word), Inter bold.
+// No image assets, recolours with the theme. Unknown types fall back to a letter.
+const PLATTER_SVG = '<svg viewBox="0 0 42 42" fill="none" aria-label="Logic Pro"><circle cx="21" cy="21" r="14" stroke="currentColor" stroke-width="1.6"/><circle cx="21" cy="21" r="10" stroke="currentColor" stroke-width="1" opacity=".55"/><circle cx="21" cy="21" r="6" stroke="currentColor" stroke-width="1" opacity=".55"/><circle cx="21" cy="21" r="1.7" fill="currentColor"/></svg>';
+function badgeGlyph(ext) {
+  if (ext === 'logicx') return PLATTER_SVG;
+  if (ext === 'als') return '<span class="wm" aria-label="Ableton Live">Live</span>';
+  return esc((ext || '?')[0].toUpperCase());
+}
+
 const CHECK_SVG = '<svg class="check" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.4"/><path d="M5 8.2 7.2 10.4 11 6.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 function statusCellHTML(entry) {
@@ -282,7 +293,7 @@ function renderList() {
       row.className = 'row' + (entry.missing ? ' missing' : '');
       row.innerHTML = `
         <div class="name">
-          <div class="badge ${entry.ext}">${entry.ext === 'als' ? 'A' : 'L'}</div>
+          <div class="badge ${entry.ext}">${badgeGlyph(entry.ext)}</div>
           <div class="nm"><b>${esc(entry.name)}</b><span title="${esc(entry.path)}">${DAW_LABEL[entry.ext]} · ${esc(entry.path)}</span></div>
         </div>
         <div class="size">${fmtBytes(st.sizeBytes)}</div>
