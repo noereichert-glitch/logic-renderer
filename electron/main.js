@@ -140,7 +140,15 @@ function handleServerLine(line) {
     try {
       const payload = JSON.parse(line.slice(wAt + EXPORT_WARNING_MARKER.length).trim());
       const project = (payload && payload.project) || 'project';
-      const warns = (payload && payload.warnings) || [];
+      // Logic sends {project, warnings:[{stage,message,names}]} (one line per
+      // render); Ableton sends one line per warning: {project, kind, title,
+      // stage, message, files}. Normalise both to a list of {stage, message, names}.
+      const warns = (payload && Array.isArray(payload.warnings))
+        ? payload.warnings
+        : (payload && payload.message)
+          ? [{ stage: payload.stage || payload.kind || 'warning', message: payload.message,
+               names: payload.files || payload.names || [] }]
+          : [];
       const messages = store.get('messages', []);
       messages.unshift({
         project,
