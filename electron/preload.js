@@ -10,4 +10,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   getInbox: () => ipcRenderer.invoke('inbox:get'),
   clearInbox: () => ipcRenderer.invoke('inbox:clear'),
+  addProjects: () => ipcRenderer.invoke('dialog:addProjects'),
+  libraryStats: (paths) => ipcRenderer.invoke('library:stats', paths),
+  scanStemma: () => ipcRenderer.invoke('stemma:scan'),
+  addToStemma: (paths) => ipcRenderer.invoke('stemma:add', paths),
+  removeFromStemma: (aliasPath) => ipcRenderer.invoke('stemma:remove', aliasPath),
+  chooseStemmaFolder: () => ipcRenderer.invoke('stemma:choose'),
+  getRenderMeta: () => ipcRenderer.invoke('meta:get'),
+  saveRenderMeta: (metaMap) => ipcRenderer.invoke('meta:save', metaMap),
 });

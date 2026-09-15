@@ -184,6 +184,157 @@ class LogicCrashedError(RuntimeError):
     relaunch and retry."""
 
 
+class RenderCancelled(RuntimeError):
+    """Raised when the user cancels the render (cooperative abort via the
+    cancel_event). Between steps this fires at the next check; mid-bounce the
+    bridge first aborts Logic's bounce (⌘. — Logic's sanctioned mid-export
+    abort, owner-confirmed), then raises. The orchestrator's try/finally still
+    quits Logic cleanly (never saving); the orchestrator then removes the
+    attempt's partial output. NOT a failure — its own outcome."""
+
+
+def _find_pid(proc: str):
+    """Logic's pid via NSWorkspace (pyobjc), falling back to pgrep. None if
+    not running or lookups unavailable."""
+    try:
+        import AppKit
+        for a in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+            if str(a.localizedName()) == proc:
+                return int(a.processIdentifier())
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(['pgrep', '-x', proc], capture_output=True,
+                             text=True, timeout=5)
+        return int(out.stdout.split()[0]) if out.stdout.strip() else None
+    except Exception:
+        return None
+
+
+# Virtual key codes for the Quartz key poster.
+KEY_S, KEY_DOWN, KEY_UP = 1, 125, 126
+
+
+def post_keys_to_pid(pid: int, keys, gap: float = 0.25) -> bool:
+    """Post key presses straight into a process via Quartz CGEventPostToPid —
+    no System Events, no focus change. `keys` = key codes, or (code, mod)
+    tuples with mod in {'cmd', 'alt'}. Proven live 2026-09-14: posted keys
+    reach Logic (S toggles solo on the selected track; Option+S = Solo Off for
+    All), where AX click/AXPress/set-value and even posted MOUSE clicks all
+    silently fail on Logic's custom header buttons. False if pyobjc is absent."""
+    try:
+        import Quartz
+    except Exception:
+        return False
+    flags = {'cmd': Quartz.kCGEventFlagMaskCommand,
+             'alt': Quartz.kCGEventFlagMaskAlternate}
+    for k in keys:
+        code, mod = (k if isinstance(k, tuple) else (k, None))
+        down = Quartz.CGEventCreateKeyboardEvent(None, code, True)
+        up = Quartz.CGEventCreateKeyboardEvent(None, code, False)
+        if mod in flags:
+            Quartz.CGEventSetFlags(down, flags[mod])
+            Quartz.CGEventSetFlags(up, flags[mod])
+        Quartz.CGEventPostToPid(pid, down)
+        time.sleep(0.05)
+        Quartz.CGEventPostToPid(pid, up)
+        time.sleep(gap)
+    return True
+
+
+def fire_bounce_abort_chord(proc: str = None, quartz_only: bool = False):
+    """Send Logic's ⌘. bounce-abort NOW, standalone — callable from ANY thread
+    (the /export/cancel endpoint fires it directly).
+
+    PRIMARY (Quartz, learned 2026-09-10): post the chord DIRECTLY to Logic's
+    process via CGEventPostToPid — no System Events, no focus change. Every
+    System-Events route measured a fixed ~16-19s click→abort, because SE serves
+    ONE client at a time and an in-flight AX scan against a CPU-pegged bouncing
+    Logic jams the counter INTERNALLY (client-side timeouts don't free it) for
+    exactly as long as Logic takes to answer. Raw HID-level events skip that
+    queue entirely — and Logic never even comes forward.
+    FALLBACK: the old System-Events frontmost flick + keystroke/key-code chord
+    (works, just slow while SE is jammed). Never raises.
+
+    Packaging note: the Quartz path needs pyobjc (pip: pyobjc-framework-Quartz);
+    installed in the dev env 2026-09-10 — add to the bundled-server build when
+    packaging. Absent pyobjc, the fallback covers it."""
+    proc = proc or LOGIC_PROCESS_NAME
+    try:
+        import Quartz  # pyobjc — see packaging note above
+        # Pid via the native workspace API — a pgrep subprocess inexplicably
+        # returned empty from the endpoint thread (live 2026-09-10) while the
+        # identical call succeeded a second later from the worker; NSWorkspace
+        # has no such moods (no subprocess, no PATH, no text parsing).
+        pid = None
+        try:
+            import AppKit
+            for a in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+                if str(a.localizedName()) == proc:
+                    pid = int(a.processIdentifier())
+                    break
+        except Exception:
+            pass
+        if pid is None:
+            out = subprocess.run(['pgrep', '-x', proc], capture_output=True,
+                                 text=True, timeout=5)
+            pid = int(out.stdout.split()[0]) if out.stdout.strip() else None
+        if pid:
+            KEY_PERIOD = 47
+            down = Quartz.CGEventCreateKeyboardEvent(None, KEY_PERIOD, True)
+            up = Quartz.CGEventCreateKeyboardEvent(None, KEY_PERIOD, False)
+            Quartz.CGEventSetFlags(down, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventSetFlags(up, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventPostToPid(pid, down)
+            time.sleep(0.05)
+            Quartz.CGEventPostToPid(pid, up)
+            print('[Exporter] bounce abort: posted Cmd-Period directly to Logic '
+                  '(Quartz, no focus change).', flush=True)
+            time.sleep(0.8)
+            return
+        if quartz_only:
+            # Redundant fast lane (the /export/cancel thread): its process
+            # listings come back empty in that thread context (live 2026-09-10,
+            # both NSWorkspace and pgrep) — bow out quietly; the worker's own
+            # abort (full chain) lands within ~1s anyway. Never run the SE flick
+            # from here: it would steal focus AFTER the bounce is already dead.
+            print('[Exporter] bounce abort (fast lane): no pid from this thread '
+                  '— leaving it to the worker.', flush=True)
+            return
+        print('[Exporter] bounce abort: Logic pid not found — falling back to '
+              'System Events chord.', flush=True)
+    except Exception as e:
+        print(f'[Exporter] bounce abort: Quartz path unavailable ({e}) — '
+              f'falling back to System Events chord.', flush=True)
+    try:
+        prior = _frontmost_app_name()
+        _set_app_frontmost(proc)
+        front = False
+        for _ in range(10):
+            try:
+                if _osascript(
+                    f'tell application "System Events" to return frontmost '
+                    f'of process "{_as_str(proc)}"', timeout=5) == 'true':
+                    front = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+            _set_app_frontmost(proc)
+        _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            keystroke "." using {{command down}}
+            delay 0.3
+            key code 47 using {{command down}}
+        end tell''', timeout=10)
+        print(f'[Exporter] bounce abort: sent Cmd-Period abort chord '
+              f'(keystroke + key code; Logic frontmost={front}).', flush=True)
+        time.sleep(0.8)
+        if prior and prior != proc:
+            _set_app_frontmost(prior)
+    except Exception as e:
+        print(f'[Exporter] bounce abort: chord failed ({e}).', flush=True)
+
+
 class DialogGuardPause(RuntimeError):
     """Raised (headless only) when the DialogGuard decides a live dialog must STOP
     the job:
@@ -293,10 +444,17 @@ class LogicRenderBridge:
     Mirrors FLRenderBridge so the orchestrator reads the same. Context-manager
     capable."""
 
-    def __init__(self, headless: bool = True):
+    # Class-level default so instances constructed without __init__ (test
+    # doubles) still read as "no cancel plumbing".
+    cancel_event = None
+
+    def __init__(self, headless: bool = True, cancel_event=None):
         self.app_path = find_logic()
         self.process_name = LOGIC_PROCESS_NAME
         self._proc = None
+        # Cooperative cancel: a threading.Event set by the server's /export/cancel.
+        # Checked once per tick in the two long waits (load + bounce); None = never.
+        self.cancel_event = cancel_event
         # headless (default on): drive the export by AX element VALUE + backgrounded
         # element clicks (no `set frontmost`, cursor never moves). The destination's
         # two irreducible keystroke chords (⌘⇧G / Return) are focus-MASKED: fired
@@ -410,13 +568,13 @@ class LogicRenderBridge:
         self._focus_sampler = None
 
     # — scan-timing (headless only, inert) —
-    def _timed_handle_dialogs(self, context=None):
+    def _timed_handle_dialogs(self, context=None, scan_timeout=15.0):
         """Wrap one per-tick DialogGuard scan and accumulate its wall-cost. Behaves
         EXACTLY like _handle_dialogs (same return value; a DialogGuardPause still
         propagates) — the finally records timing on both the normal and raise paths."""
         t0 = time.time()
         try:
-            return self._handle_dialogs(context)
+            return self._handle_dialogs(context, scan_timeout=scan_timeout)
         finally:
             self._scan_count += 1
             self._scan_ms_total += (time.time() - t0) * 1000.0
@@ -477,13 +635,18 @@ class LogicRenderBridge:
     def is_alive(self) -> bool:
         return _process_alive(self.process_name)
 
-    def wait_for_logic_ready(self, timeout: float = 180.0,
+    def wait_for_logic_ready(self, timeout: float = 600.0,
                              settle: float = 3.0) -> bool:
         """Wait until Logic's project window is up, then a short settle.
 
         Adaptive: returns as soon as a STANDARD window with a real title and no
         blocking sheet exists (the project finished opening) plus `settle` seconds
         for plugin load to taper — proven floor = `settle`, hard ceiling = `timeout`.
+        The ceiling is deliberately generous (10 min): Logic's FIRST launch after a
+        reboot re-scans plugins and blew through the old 180s live (2026-07-30,
+        "did not finish loading in time"). The poll exits the moment Logic is
+        ready, so a high ceiling costs nothing on normal loads — the render starts
+        the instant Logic is ready, exactly as before.
         Logic can be running with zero/untitled windows while a project loads, so
         we poll for a *named* AXStandardWindow.
         """
@@ -511,6 +674,8 @@ class LogicRenderBridge:
             return "no"
         end tell'''
         while time.time() < end:
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise RenderCancelled('cancelled while Logic was loading')
             # DialogGuard runs OUTSIDE the broad try below so a DialogGuardPause
             # (unknown/terminal dialog) propagates and aborts the wait instead of
             # being swallowed. Transient scan errors are handled inside _handle_dialogs.
@@ -560,7 +725,11 @@ class LogicRenderBridge:
             _set_app_frontmost(proc)
             time.sleep(0.15)
             flick_msg = _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                set w to window "Open"
+                -- Bind w when the export dialog exists; tolerated absent so bodies
+                -- that don't reference w (e.g. the bounce-abort chord) still run.
+                try
+                    set w to window "Open"
+                end try
 {body_script}
             end tell''', timeout=30)
             # A poll fallback fired (sheet didn't appear/vanish in ~3s) — always
@@ -607,38 +776,7 @@ class LogicRenderBridge:
         # Defensive: clear a modal "Key Command Assignment Conflicts" sheet that can
         # block the main window before we try to open the Export menu.
         self._dismiss_conflict_sheet()
-        # Headless: run the DialogGuard right before opening the Export menu (catalog
-        # requirement #1) — engine decides per dialog; element clicks only, cursor
-        # never moves. Context carries the pass # + destination for the C2 gate. May
-        # raise DialogGuardPause (propagates → orchestrator quits Logic cleanly).
-        if self.headless:
-            self._handle_dialogs(self._dialog_context(bypass_fx=bypass_fx,
-                                                      dest=output_folder))
-
-        # 1. Open the export dialog. Headless: the menu-bar element click works
-        # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`, no
-        # focus steal. Legacy: keep the frontmost flick.
-        if self.headless:
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-            end tell''', timeout=20)
-        else:
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
-                set frontmost to true
-                delay 0.4
-                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
-            end tell''', timeout=20)
-
-        # Poll for the dialog window to appear.
-        if not self._wait_for_open_dialog(timeout=30):
-            if not self.is_alive():
-                raise LogicCrashedError('Logic died while opening the export dialog.')
-            raise RuntimeError('Export dialog did not open.')
-
-        # Defensive again: the conflict sheet can also surface as the dialog opens.
-        self._dismiss_conflict_sheet()
-
-        # 2 + 3 + 4. Set destination, controls, and export.
+        # 2 + 3 + 4 prep — pure string building, done once, reused per attempt.
         desired_bypass = 1 if bypass_fx else 0
 
         # The accessory controls (Format/Bypass/Normalize/Range) and the Export
@@ -740,31 +878,82 @@ class LogicRenderBridge:
                 click button "Export" of w
             end if'''
 
-        # The destination path field lives ONLY inside the ⌘⇧G "Go to Folder" sheet
-        # (window "Open" has no path field — just a search field + the "Where:"
-        # pop-up; P1/P2 probes, docs/2026-06-28/probe_save_panel.txt). The sheet has
-        # no accessible "Go" button (only Close), so Return is required to confirm.
-        if self.headless:
-            # HEADLESS: backgrounded element actions + a single focus-MASKED moment
-            # for the two irreducible chords (⌘⇧G, Return). No path typing; the
-            # destination is set by AX value. Cursor never moves.
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+        # Stages 1–4 (open dialog → destination → controls → Export click) run as
+        # ONE retryable unit. A focus race during the masked flick (the user
+        # clicking/typing at that instant) can orphan or dismiss the dialog
+        # mid-sequence — seen live 2026-08-06 as -1728 "Can't get window Open"
+        # (Hers ×2: QuickTime / stemma frontmost). Every such failure happens
+        # BEFORE the Export click (the stage's last action), so redoing the whole
+        # stage is safe. Crashes and DialogGuardPause propagate immediately.
+        def _dialog_stage():
+            # DialogGuard first (catalog requirement #1) — engine decides per
+            # dialog; element clicks only, cursor never moves. Context carries the
+            # pass # + destination for the C2 gate. May raise DialogGuardPause
+            # (propagates → orchestrator quits Logic cleanly). Re-runs per attempt.
+            if self.headless:
+                self._handle_dialogs(self._dialog_context(bypass_fx=bypass_fx,
+                                                          dest=output_folder))
+
+            # 1. Open the export dialog. Headless: the menu-bar element click works
+            # against a BACKGROUNDED Logic (P3 probe TEST A) — no `set frontmost`,
+            # no focus steal. Legacy: keep the frontmost flick.
+            # A busy Logic (post-load churn, loaded machine) can sit unresponsive
+            # past the osascript timeout while the click is merely QUEUED — seen
+            # live 2026-09-07 ("timed out after 20 seconds" on this exact click).
+            # So: 40s of patience, and on a timeout don't fail — the click often
+            # still lands late; the dialog poll below is the real judge.
+            try:
+                if self.headless:
+                    _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
+            end tell''', timeout=40)
+                else:
+                    _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                set frontmost to true
+                delay 0.4
+                click menu item "{_as_str(EXPORT_MENU_ITEM)}" of menu "Export" of menu item "Export" of menu "File" of menu bar 1
+            end tell''', timeout=40)
+            except Exception as e:
+                if 'timed out' not in str(e):
+                    raise
+                print('[Exporter] export menu click timed out — checking whether '
+                      'the dialog opened anyway.', flush=True)
+
+            # Poll for the dialog window to appear.
+            if not self._wait_for_open_dialog(timeout=30):
+                if not self.is_alive():
+                    raise LogicCrashedError('Logic died while opening the export dialog.')
+                raise RuntimeError('Export dialog did not open.')
+
+            # Defensive again: the conflict sheet can surface as the dialog opens.
+            self._dismiss_conflict_sheet()
+
+            # The destination path field lives ONLY inside the ⌘⇧G "Go to Folder"
+            # sheet (window "Open" has no path field — just a search field + the
+            # "Where:" pop-up; P1/P2 probes, docs/2026-06-28/probe_save_panel.txt).
+            # The sheet has no accessible "Go" button (only Close), so Return is
+            # required to confirm.
+            if self.headless:
+                # HEADLESS: backgrounded element actions + a single focus-MASKED
+                # moment for the two irreducible chords (⌘⇧G, Return). No path
+                # typing; the destination is set by AX value. Cursor never moves.
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
                 if exists button "Show Options" of w then
                     click button "Show Options" of w
                     delay 0.3
                 end if
             end tell''', timeout=20)
-            # Two sheet-waits are POLLED (proceed the instant the sheet
-            # appears/vanishes) instead of fixed sleeps — this shrinks the masked
-            # flick and returns focus to the user as soon as the Go-to sheet is
-            # actually gone. Each poll caps at ~3s (60 × 50ms) and, on timeout,
-            # falls back to the ORIGINAL fixed delay so it is never worse than
-            # before. The other delays (the 0.15 post-activation sleep in
-            # _run_masked_keys and the 0.3 after set-value) are unchanged. The body
-            # returns a marker string when a fallback fires so _run_masked_keys can
-            # log it.
-            self._run_masked_keys(f'''
+                # Two sheet-waits are POLLED (proceed the instant the sheet
+                # appears/vanishes) instead of fixed sleeps — this shrinks the
+                # masked flick and returns focus to the user as soon as the Go-to
+                # sheet is actually gone. Each poll caps at ~3s (60 × 50ms) and, on
+                # timeout, falls back to the ORIGINAL fixed delay so it is never
+                # worse than before. The other delays (the 0.15 post-activation
+                # sleep in _run_masked_keys and the 0.3 after set-value) are
+                # unchanged. The body returns a marker string when a fallback fires
+                # so _run_masked_keys can log it.
+                self._run_masked_keys(f'''
                 -- ⌘⇧G with ACTIVATION RETRY: the chord only lands if Logic's
                 -- activation actually completed — a fixed 0.15s settle after
                 -- `set frontmost` proved racy (the chord fired into the void and
@@ -813,16 +1002,16 @@ class LogicRenderBridge:
                 if (not fb1) and attempts > 1 then set flickMsg to flickMsg & "RETRY: Go-to sheet appeared on attempt " & (attempts as text) & "; "
                 if fb2 then set flickMsg to flickMsg & "FALLBACK sheet-gone poll timed out (~3s) -> used delay 0.8; "
                 return flickMsg''')
-            # Controls + Export click — the single `controls_body` osascript.
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+                # Controls + Export click — the single `controls_body` osascript.
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
 {controls_body}
             end tell''', timeout=60)
-        else:
-            # LEGACY (not headless): one frontmost-held script that TYPES the
-            # destination path char-by-char (⌘⇧G + ⌘A + keystroke "<path>"). Kept as
-            # the pre-headless fallback.
-            _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
+            else:
+                # LEGACY (not headless): one frontmost-held script that TYPES the
+                # destination path char-by-char (⌘⇧G + ⌘A + keystroke "<path>").
+                # Kept as the pre-headless fallback.
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(proc)}"
                 set w to window "Open"
                 if exists button "Show Options" of w then
                     click button "Show Options" of w
@@ -840,6 +1029,30 @@ class LogicRenderBridge:
                 delay 0.8
 {controls_body}
             end tell''', timeout=60)
+
+        # Run the stage; recover and retry on the known transient failures.
+        for attempt in range(1, 4):
+            try:
+                _dialog_stage()
+                break
+            except (LogicCrashedError, DialogGuardPause):
+                raise
+            except Exception as e:
+                msg = str(e)
+                transient = ('-1728' in msg or '-1719' in msg
+                             or '-2753' in msg  # "variable w is not defined" — the
+                             # tolerant w-bind in _run_masked_keys turns a vanished
+                             # export dialog into this signature
+                             or 'timed out' in msg
+                             or 'Export dialog did not open' in msg)
+                if not transient or attempt == 3:
+                    raise
+                if not self.is_alive():
+                    raise LogicCrashedError('Logic died during the export-dialog stage.')
+                print(f'[Exporter] export-dialog stage failed (attempt {attempt}): '
+                      f'{msg} — recovering and retrying.', flush=True)
+                self._close_export_dialog_if_open()
+                time.sleep(1.0)
 
         # 4b. Defensive: a stray "Replace existing files?" sheet (shouldn't occur —
         # we sort between passes so the root is empty — but handle it).
@@ -864,6 +1077,126 @@ class LogicRenderBridge:
                 pass
             time.sleep(0.4)
         return False
+
+    # — track-header state (mute / solo / names), read right after load —
+    # Each header is a UI element described "Track N “Name”" holding checkboxes
+    # described "Mute" / "Solo" and a text field whose description is the exact
+    # track name (probed live 2026-09-14). Read while Logic is IDLE (cheap);
+    # never during a bounce.
+    def read_track_states(self):
+        """Return [{'name', 'muted', 'soloed', 'selected'}] in visible header
+        order; [] on any failure (the render must never depend on this)."""
+        try:
+            out = _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                set out to ""
+                set els to entire contents of window 1
+                repeat with e in els
+                    try
+                        if class of e is checkbox and description of e is "Mute" then
+                            set par to (value of attribute "AXParent" of e)
+                            set nm to ""
+                            set so to "0"
+                            set se to "0"
+                            repeat with c in (every UI element of par)
+                                try
+                                    if class of c is text field then set nm to description of c
+                                    if class of c is checkbox and description of c is "Solo" then set so to (value of c as text)
+                                    if class of c is radio button and description of c is "Has Focus" then set se to (value of c as text)
+                                end try
+                            end repeat
+                            set out to out & nm & tab & (value of e as text) & tab & so & tab & se & linefeed
+                        end if
+                    end try
+                end repeat
+                return out
+            end tell''', timeout=90, strip=False)
+        except Exception as e:
+            print(f'[Exporter] track-state read failed ({e}) — skipping mute/solo handling.',
+                  flush=True)
+            return []
+        tracks = []
+        for line in (out or '').splitlines():
+            parts = line.split('\t')
+            if len(parts) != 4 or not parts[0]:
+                continue
+            tracks.append({'name': parts[0],
+                           'muted': parts[1].strip() == '1',
+                           'soloed': parts[2].strip() == '1',
+                           'selected': parts[3].strip() == '1'})
+        return tracks
+
+    def clear_solos(self, tracks=None):
+        """Un-solo everything with ONE global key command — Option+S ("Solo
+        Off for All", owner-supplied 2026-09-14). DELIVERY MATTERS (live
+        experiments 2026-09-14): Logic's key-command engine only honors the
+        chord as a System Events `keystroke … using {option down}` with Logic
+        frontmost — Quartz pid-posted keys (even with a physical Option-down
+        event) are ignored, as are AX click/AXPress/set-value and posted mouse
+        clicks on the header buttons. So this is a focus-MASKED chord like the
+        export-destination ⌘⇧G: idle-gated, Logic front for an instant, focus
+        handed straight back. Pre-flight only (Logic idle — no SE jam).
+        Only fired when ≥1 solo is lit: with none lit, Option+S would SOLO
+        something instead. Verified by a re-read; project file untouched.
+        Returns (cleared_names, still_lit_names)."""
+        tracks = tracks if tracks is not None else self.read_track_states()
+        soloed = [t['name'] for t in tracks if t['soloed']]
+        if not soloed:
+            return [], []
+        try:
+            if self.headless:
+                self._run_masked_keys('keystroke "s" using {option down}')
+            else:
+                _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                    set frontmost to true
+                    delay 0.5
+                    keystroke "s" using {{option down}}
+                end tell''', timeout=20)
+        except Exception as e:
+            print(f'[Exporter] clear_solos chord failed ({e}).', flush=True)
+            return [], soloed
+        time.sleep(0.8)
+        still = [t['name'] for t in self.read_track_states() if t['soloed']]
+        return [n for n in soloed if n not in still], still
+
+    def _abort_bounce(self):
+        """Best-effort abort of an in-flight bounce, Logic's sanctioned way.
+        Primary: element-click a Cancel/Stop button on the bounce-progress window
+        (backgrounded, no focus steal). Fallback: the ⌘. (Command-Period) abort
+        chord — macOS/Logic's standard cancel, owner-corrected 2026-09-10 (an
+        earlier ctrl-C description sent a chord Logic ignores, making cancels
+        crawl through the quit path). Focus-masked like our other chords. Never
+        raises — the caller raises RenderCancelled regardless, and quit_logic's
+        DialogGuard handles whatever dialog state remains."""
+        # CHORD ONLY. Ordering learned live 2026-09-10: an `entire contents`
+        # button-search against a CPU-pegged bouncing Logic just burns its full
+        # timeout and finds nothing (the bounce dialog has NO button — owner-
+        # observed), while the ⌘. chord aborts instantly when delivered right.
+        # NOTE: /export/cancel ALSO fires this chord immediately from its own
+        # thread (fire_bounce_abort_chord below) so cancels don't wait for this
+        # thread to surface from an in-flight dialog scan (16s dead air, live
+        # 2026-09-10). A second chord at an already-idle Logic is a no-op.
+        fire_bounce_abort_chord(self.process_name)
+
+    def _close_export_dialog_if_open(self):
+        """Best-effort tidy-up between export-dialog attempts: cancel a stray
+        Go-to-Folder sheet, then the export dialog itself, so the retry reopens
+        from a clean slate. Backgrounded element clicks only; never raises."""
+        try:
+            _osascript(f'''tell application "System Events" to tell process "{_as_str(self.process_name)}"
+                if exists window "Open" then
+                    if exists sheet 1 of window "Open" then
+                        try
+                            click button "Cancel" of sheet 1 of window "Open"
+                        end try
+                        delay 0.3
+                    end if
+                    try
+                        click button "Cancel" of window "Open"
+                    end try
+                end if
+            end tell''', timeout=15)
+        except Exception:
+            pass
 
     # — DialogGuard: detector + decision + executor (headless only, step 6b) —
     # Replaces the old hardcoded safe-button whitelist with the catalog-driven
@@ -920,7 +1253,7 @@ class LogicRenderBridge:
                 'actual_dest_root': dest,
                 'colliding_filename': None}
 
-    def _scan_blocking_dialogs(self):
+    def _scan_blocking_dialogs(self, timeout: float = 15.0):
         """DETECTOR (read-only): every blocking pop-up on the Logic process — free
         AXDialog windows AND sheets — as a list of {title, body, buttons[]}. Element
         reads only; NO clicks here. Best-effort: transient AX errors → [].
@@ -1021,7 +1354,7 @@ class LogicRenderBridge:
             # whitespace and would eat that leading separator, collapsing the 3-field
             # record to 2 and dropping it. We split records on '\n' and skip blanks
             # below, so the trailing '\n\n' is harmless without any strip.
-            out = _osascript(script, timeout=15, strip=False)
+            out = _osascript(script, timeout=timeout, strip=False)
         except Exception:
             return []
         dialogs = []
@@ -1092,7 +1425,7 @@ class LogicRenderBridge:
               f'buttons={dlg.get("buttons", [])} -> {decision.action}{btn} '
               f'rule={decision.rule_id} reason={decision.reason!r}')
 
-    def _handle_dialogs(self, context=None):
+    def _handle_dialogs(self, context=None, scan_timeout=15.0):
         """EXECUTOR (headless only). Detect → decide() → do ONLY what it returns:
           • IGNORE → leave it.
           • CLICK <button> → element-click that exact button (backgrounded). If the
@@ -1107,7 +1440,7 @@ class LogicRenderBridge:
             return []
         locale = self._active_locale()
         handled = []
-        for dlg in self._scan_blocking_dialogs():
+        for dlg in self._scan_blocking_dialogs(timeout=scan_timeout):
             decision = guard.decide(dlg, locale=locale, context=context)
             self._log_dialog(dlg, locale, decision)
             handled.append((dlg, decision))
@@ -1190,6 +1523,11 @@ class LogicRenderBridge:
         while time.time() < end:
             if not self.is_alive():
                 raise LogicCrashedError('Logic exited during export.')
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                # Abort the bounce Logic's own sanctioned way first, then raise —
+                # the orchestrator quits Logic (never saving) and cleans partials.
+                self._abort_bounce()
+                raise RenderCancelled('cancelled during the export bounce')
             # Headless: also run the DialogGuard each tick so a blocking dialog that
             # appears AFTER the Export click — "The export operation failed.",
             # disk-full, etc. — is detected → decided → handled the instant it shows
@@ -1200,7 +1538,14 @@ class LogicRenderBridge:
             # transient scan errors and returns [] when nothing blocks, so a healthy
             # bounce (no AXDialog/sheet) is untouched. Legacy path never calls this.
             if self.headless:
-                self._timed_handle_dialogs()
+                # SHORT scan leash during the bounce (4s, not 15): System Events
+                # serves ONE Apple-event client at a time, so a long scan against
+                # a CPU-pegged bouncing Logic blocks EVERYTHING behind it in the
+                # queue — including the user's cancel chord (live 2026-09-10:
+                # 19s click→abort with the 15s leash, even fired from a parallel
+                # thread). Capping the scan bounds the whole queue's latency; a
+                # timed-out scan is just skipped and retried next tick.
+                self._timed_handle_dialogs(scan_timeout=4)
             snap = {}
             try:
                 for name in os.listdir(output_folder):

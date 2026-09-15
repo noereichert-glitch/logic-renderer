@@ -24,7 +24,7 @@ Build prompts (run in order): `docs/Logic_Renderer_ClaudeCode_Prompts_v1.md`
 - **No Screen Recording.** Drive Logic by accessible UI *elements* (System
   Events), never by screenshots or coordinate clicks.
 - **No Finder automation.** Use the in-dialog "Go to Folder" (⌘⇧G) to set paths;
-  `shell.showItemInFinder` (NSWorkspace, no permission prompt) is fine.
+  `shell.showItemInFolder` (NSWorkspace, no permission prompt) is fine.
 - **Render at the project's native sample rate.** Don't force a sample rate.
 - **Background-friendly.** Target: the client keeps using the Mac while it
   renders (Logic minimized; only the brief export-trigger grabs focus). Keep the
