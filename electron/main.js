@@ -7,16 +7,18 @@ const Store = require('electron-store');
 const store = new Store();
 let mainWindow;
 let pythonProcess;          // Logic Pro backend (python/server.py, :5123)
-let abletonProcess;         // Ableton Live backend (Stemma repo's server.py, :5124)
+let abletonProcess;         // Ableton Live backend (ableton-renderer repo's server.py, :5124)
 
-// The Ableton renderer lives in the sibling Stemma repo and stays a separate
-// process on its own port (owner decision 2026-09-14: connect it as-is first,
-// parity with Logic later). Dev-only for now: it is started from the source
-// tree next to this repo, or wherever STEMMA_ABLETON_SERVER points.
+// The Ableton renderer lives in the sibling ableton-renderer repo (renamed from
+// "Stemma" on 2026-09-15; an older checkout may still carry that name) and stays
+// a separate process on its own port (owner decision 2026-09-14: connect it
+// as-is first, parity with Logic later). Dev-only for now: it is started from
+// the source tree next to this repo, or wherever ABLETON_RENDERER_SERVER points.
 const ABLETON_PORT = 5124;
 function findAbletonServer() {
   const candidates = [
-    process.env.STEMMA_ABLETON_SERVER,
+    process.env.ABLETON_RENDERER_SERVER,
+    path.resolve(__dirname, '../../ableton-renderer/python/server.py'),
     path.resolve(__dirname, '../../Stemma/python/server.py'),
   ].filter(Boolean);
   return candidates.find(p => fs.existsSync(p)) || null;
@@ -80,11 +82,11 @@ function startAbletonServer(env) {
   }
   const serverPath = findAbletonServer();
   if (!serverPath) {
-    console.log('[Ableton] server.py not found (expected ../Stemma/python/server.py or STEMMA_ABLETON_SERVER) — .als rows will show the renderer offline');
+    console.log('[Ableton] server.py not found (expected ../ableton-renderer/python/server.py or ABLETON_RENDERER_SERVER) — .als rows will show the renderer offline');
     return;
   }
   console.log('[Ableton] Using python3 dev server:', serverPath, 'on port', ABLETON_PORT);
-  // PYTHONUNBUFFERED: the Stemma server's progress prints are not flushed, and
+  // PYTHONUNBUFFERED: the Ableton server's progress prints are not flushed, and
   // a piped stdout is block-buffered — without this its log lines only appear
   // when the process exits, which hid the first failure's reason (2026-09-15).
   abletonProcess = spawnBackend('Ableton', 'python3', [serverPath],
