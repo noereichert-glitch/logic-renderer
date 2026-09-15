@@ -6,7 +6,21 @@ const Store = require('electron-store');
 
 const store = new Store();
 let mainWindow;
-let pythonProcess;
+let pythonProcess;          // Logic Pro backend (python/server.py, :5123)
+let abletonProcess;         // Ableton Live backend (Stemma repo's server.py, :5124)
+
+// The Ableton renderer lives in the sibling Stemma repo and stays a separate
+// process on its own port (owner decision 2026-09-14: connect it as-is first,
+// parity with Logic later). Dev-only for now: it is started from the source
+// tree next to this repo, or wherever STEMMA_ABLETON_SERVER points.
+const ABLETON_PORT = 5124;
+function findAbletonServer() {
+  const candidates = [
+    process.env.STEMMA_ABLETON_SERVER,
+    path.resolve(__dirname, '../../Stemma/python/server.py'),
+  ].filter(Boolean);
+  return candidates.find(p => fs.existsSync(p)) || null;
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -24,6 +38,54 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
+}
+
+// Spawn one DAW backend and wire its stdout/stderr into the log and the marker
+// protocol ([[EXPORT_FAILURE]] / [[EXPORT_WARNING]] → notifications + inbox).
+function spawnBackend(label, command, args, env) {
+  const proc = spawn(command, args, { env });
+
+  // Line-buffer the server's stdout: chunks can split mid-line, so accumulate and
+  // dispatch only on complete '\n'-terminated lines. Each line is logged, and a
+  // [[EXPORT_FAILURE]] marker line fires the native failure notification.
+  let stdoutBuffer = '';
+  proc.stdout.on('data', (data) => {
+    stdoutBuffer += data.toString();
+    let nl;
+    while ((nl = stdoutBuffer.indexOf('\n')) >= 0) {
+      const line = stdoutBuffer.slice(0, nl);
+      stdoutBuffer = stdoutBuffer.slice(nl + 1);
+      console.log(`[${label}]`, line);
+      handleServerLine(line);
+    }
+  });
+
+  proc.stderr.on('data', (data) => {
+    // stderr carries Flask's routine request log (every /health and /progress
+    // poll) alongside genuine tracebacks — label it neutrally; real errors are
+    // recognizable by their content.
+    console.error(`[${label}]`, data.toString());
+  });
+
+  proc.on('close', (code) => {
+    console.log(`[${label}] exited with code`, code);
+  });
+  return proc;
+}
+
+function startAbletonServer(env) {
+  if (app.isPackaged) {
+    console.log('[Ableton] packaged builds do not bundle the Ableton backend yet — .als rows will show the renderer offline');
+    return;
+  }
+  const serverPath = findAbletonServer();
+  if (!serverPath) {
+    console.log('[Ableton] server.py not found (expected ../Stemma/python/server.py or STEMMA_ABLETON_SERVER) — .als rows will show the renderer offline');
+    return;
+  }
+  console.log('[Ableton] Using python3 dev server:', serverPath, 'on port', ABLETON_PORT);
+  abletonProcess = spawnBackend('Ableton', 'python3', [serverPath],
+    { ...env, STEMEXPORT_PORT: String(ABLETON_PORT) });
 }
 
 function startPythonServer() {
@@ -53,35 +115,9 @@ function startPythonServer() {
   const launcherEnv = Array.from(launcherApps).filter(Boolean).join('\n');
   console.log('[Python] focus-exclude launcher apps:', launcherEnv.split('\n').join(', '));
 
-  pythonProcess = spawn(command, args, {
-    env: { ...process.env, STEMEXPORT_LAUNCHER_APPS: launcherEnv }
-  });
-
-  // Line-buffer the server's stdout: chunks can split mid-line, so accumulate and
-  // dispatch only on complete '\n'-terminated lines. Each line is logged, and a
-  // [[EXPORT_FAILURE]] marker line fires the native failure notification.
-  let stdoutBuffer = '';
-  pythonProcess.stdout.on('data', (data) => {
-    stdoutBuffer += data.toString();
-    let nl;
-    while ((nl = stdoutBuffer.indexOf('\n')) >= 0) {
-      const line = stdoutBuffer.slice(0, nl);
-      stdoutBuffer = stdoutBuffer.slice(nl + 1);
-      console.log('[Python]', line);
-      handleServerLine(line);
-    }
-  });
-
-  pythonProcess.stderr.on('data', (data) => {
-    // stderr carries Flask's routine request log (every /health and /progress
-    // poll) alongside genuine tracebacks — label it neutrally; real errors are
-    // recognizable by their content.
-    console.error('[Python]', data.toString());
-  });
-
-  pythonProcess.on('close', (code) => {
-    console.log('[Python] exited with code', code);
-  });
+  const env = { ...process.env, STEMEXPORT_LAUNCHER_APPS: launcherEnv };
+  pythonProcess = spawnBackend('Python', command, args, env);
+  startAbletonServer(env);
 }
 
 const EXPORT_FAILURE_MARKER = '[[EXPORT_FAILURE]]';
@@ -162,11 +198,13 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (pythonProcess) pythonProcess.kill();
+  if (abletonProcess) abletonProcess.kill();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   if (pythonProcess) pythonProcess.kill();
+  if (abletonProcess) abletonProcess.kill();
 });
 
 ipcMain.handle('dialog:openFolder', async () => {

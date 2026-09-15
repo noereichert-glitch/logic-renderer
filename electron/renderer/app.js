@@ -5,7 +5,15 @@
 // plants an alias in the folder. NOTHING auto-renders: rendering starts only
 // from the Render / Render All buttons, one at a time (Logic's limit).
 
-const API = 'http://127.0.0.1:5123';
+// One backend per DAW, each its own process on its own port (spawned by main.js).
+// The export / progress / cancel / health JSON shapes are twins, so the render
+// flow below is DAW-agnostic — only the base URL changes per row. A DAW with no
+// entry here is listed but not renderable ("Renderer coming soon").
+const BACKENDS = { logicx: 'http://127.0.0.1:5123', als: 'http://127.0.0.1:5124' };
+const apiFor = (ext) => BACKENDS[ext];
+const hasRenderer = (entry) => !!BACKENDS[entry.ext];
+// Only the Logic backend has /export/cancel; an active Ableton render runs to the end.
+const CANCELLABLE = { logicx: true };
 const STORAGE_OUTPUT_FOLDER = 'stemExport.outputFolder';
 const SYNC_MS = 3000;          // folder mirror cadence
 const STATS_EVERY = 10;        // full du/mtime refresh every Nth sync
@@ -210,7 +218,7 @@ function statusCellHTML(entry) {
       // with an amber ⚠ mark beside it when there were warnings.
       return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span>${warnMark(entry.id, rt.warnings)}</div>`;
   }
-  if (entry.ext !== 'logicx') return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
+  if (!hasRenderer(entry)) return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
   const lr = meta[entry.path];
   if (lr)
     return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span>${warnMark(entry.id, lr.warnings)}</div>`;
@@ -299,7 +307,8 @@ function renderList() {
       const st = stats[entry.path] || {};
       const rt = runtime[entry.id];
       const busy = rt && (rt.status === 'queued' || rt.status === 'rendering');
-      const renderable = entry.ext === 'logicx' && !entry.missing && !busy && outputFolder;
+      const renderable = hasRenderer(entry) && !entry.missing && !busy && outputFolder;
+      const cancellable = busy && (rt.status === 'queued' || CANCELLABLE[entry.ext]);
 
       const row = document.createElement('div');
       row.className = 'row' + (entry.missing ? ' missing' : '');
@@ -313,10 +322,12 @@ function renderList() {
         ${statusCellHTML(entry)}
         <div class="actions">
           ${busy
-            ? `<button class="btn-render" data-cancel="${esc(entry.id)}"
-                 title="${rt.status === 'queued' ? 'Remove from the render queue' : 'Stop this render — Logic quits cleanly, partial files are cleaned up'}">Cancel</button>`
+            ? `<button class="btn-render" data-cancel="${esc(entry.id)}" ${cancellable ? '' : 'disabled'}
+                 title="${rt.status === 'queued' ? 'Remove from the render queue'
+                        : cancellable ? `Stop this render — ${DAW_LABEL[entry.ext]} quits cleanly, partial files are cleaned up`
+                        : `Cancelling an active ${DAW_LABEL[entry.ext]} render isn't supported yet — it will run to the end`}">Cancel</button>`
             : `<button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
-                 title="${outputFolder ? (entry.ext === 'logicx' ? 'Render stems' : `${DAW_LABEL[entry.ext] || 'This'} renderer not connected yet`) : 'Choose an output folder first'}">Render</button>`}
+                 title="${outputFolder ? (hasRenderer(entry) ? 'Render stems' : `${DAW_LABEL[entry.ext] || 'This'} renderer not connected yet`) : 'Choose an output folder first'}">Render</button>`}
           <button class="btn-remove" data-remove="${esc(entry.id)}" title="Remove from stemma (alias goes to Trash; original untouched)">✕</button>
         </div>
         ${rowWarnings(entry)}`;
@@ -352,7 +363,7 @@ function renderList() {
   // Render All = every renderable row in the CURRENT filtered view.
   const candidates = visible.filter(e => {
     const rt = runtime[e.id];
-    return e.ext === 'logicx' && !e.missing && !(rt && (rt.status === 'queued' || rt.status === 'rendering'));
+    return hasRenderer(e) && !e.missing && !(rt && (rt.status === 'queued' || rt.status === 'rendering'));
   });
   const btnAll = $('btn-render-all');
   btnAll.disabled = !outputFolder || !candidates.length;
@@ -381,9 +392,10 @@ async function cancelEntry(id) {
     cancelPending.add(id);
     runtime[id] = { status: 'rendering', detail: 'Cancelling…' };
     const entry = entries.find(e => e.id === id);
-    if (entry) updateRowStatus(entry);
+    if (!entry || !CANCELLABLE[entry.ext]) { cancelPending.delete(id); return; }
+    updateRowStatus(entry);
     try {
-      await fetch(`${API}/export/cancel`, { method: 'POST' });
+      await fetch(`${apiFor(entry.ext)}/export/cancel`, { method: 'POST' });
     } catch (e) { /* backend unreachable — the poll loop will surface it */ }
   }
 }
@@ -405,12 +417,13 @@ async function processQueue() {
   const entry = entries.find(e => e.id === activeId);
   if (!entry) { activeId = null; return processQueue(); }
 
-  runtime[activeId] = { status: 'rendering', detail: 'Launching Logic Pro…' };
+  const launching = `Launching ${DAW_LABEL[entry.ext]}…`;
+  runtime[activeId] = { status: 'rendering', detail: launching };
   renderList();
-  setFootProgress(entry.name, 'Launching Logic Pro…', 5);
+  setFootProgress(entry.name, launching, 5);
 
   try {
-    const res = await fetch(`${API}/export`, {
+    const res = await fetch(`${apiFor(entry.ext)}/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       // Render the ORIGINAL the alias points at — always the current session.
@@ -435,7 +448,7 @@ function pollUntilDone(entry) {
     const poller = setInterval(async () => {
       let data;
       try {
-        const res = await fetch(`${API}/export/progress`);
+        const res = await fetch(`${apiFor(entry.ext)}/export/progress`);
         data = await res.json();
       } catch (e) { return; } // backend busy — keep polling
       if (!data.done) {
@@ -500,13 +513,16 @@ function setFootProgress(name, detail, pct) {
 // ── Backend health + live rail counts ────────────────────────────────────────
 async function pollHealth() {
   const dot = $('health-dot'), label = $('health-label');
-  try {
-    const res = await fetch(`${API}/health`);
-    if (res.ok) { dot.className = 'sync-dot ok'; label.textContent = 'Renderer ready'; }
-    else throw new Error();
-  } catch (e) {
-    dot.className = 'sync-dot err'; label.textContent = 'Renderer offline';
-  }
+  // One /health per backend; name the one that is down rather than hiding it
+  // behind a single green dot.
+  const results = await Promise.all(Object.entries(BACKENDS).map(async ([ext, base]) => {
+    try { const res = await fetch(`${base}/health`); return [ext, res.ok]; }
+    catch (e) { return [ext, false]; }
+  }));
+  const down = results.filter(([, ok]) => !ok).map(([ext]) => DAW_LABEL[ext]);
+  if (!down.length) { dot.className = 'sync-dot ok'; label.textContent = 'Renderers ready'; }
+  else if (down.length === results.length) { dot.className = 'sync-dot err'; label.textContent = 'Renderers offline'; }
+  else { dot.className = 'sync-dot warn'; label.textContent = `${down.join(' + ')} renderer offline`; }
   refreshCounts();
 }
 

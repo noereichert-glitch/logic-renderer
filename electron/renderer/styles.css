@@ -47,6 +47,7 @@ button{font-family:inherit}
 .sync-dot{width:7px;height:7px;border-radius:50%;background:var(--warn)}
 .sync-dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
 .sync-dot.err{background:var(--err)}
+.sync-dot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
 
 /* ── body: left rail + main ── */
 .body{display:flex;flex:1;min-height:0}
