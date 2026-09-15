@@ -169,6 +169,21 @@ def sort_wavs_into_subfolder(
     return kept
 
 
+def unique_output_path(output_folder: str, project_name: str) -> str:
+    """First free render path for a session: <name>, then <name> (2), (3), …
+    A candidate is taken if EITHER its folder or its .zip already exists, so a
+    second render of the same session never lands in a leftover folder and
+    never overwrites the previous zip. The stem filenames inside still use the
+    session name, not the folder name."""
+    n = 1
+    while True:
+        candidate = project_name if n == 1 else f'{project_name} ({n})'
+        path = os.path.join(output_folder, candidate)
+        if not os.path.exists(path) and not os.path.exists(path + '.zip'):
+            return path
+        n += 1
+
+
 def zip_project_folder(project_folder: str) -> str:
     """
     Zip the project folder into <parent>/<project_name>.zip.

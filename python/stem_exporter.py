@@ -50,6 +50,7 @@ from logic_render import (
     resolve_project_path,
 )
 from one_click_helpers import (
+    unique_output_path,
     sort_wavs_into_subfolder,
     zip_project_folder,
 )
@@ -106,8 +107,14 @@ class StemExporter:
         # both the launch and the project-name derivation use the real project.
         self.file_path = resolve_project_path(self.file_path)
         project_name = os.path.splitext(os.path.basename(self.file_path))[0]
-        project_folder = os.path.join(self.output_folder, project_name)
-        os.makedirs(project_folder, exist_ok=True)
+        # Always a NEW folder: a leftover from a failed/cancelled run or an earlier
+        # render of the same session gets "<name> (2)", never reused, and the zip
+        # follows the folder name so versions never overwrite each other.
+        project_folder = unique_output_path(self.output_folder, project_name)
+        os.makedirs(project_folder)
+        if os.path.basename(project_folder) != project_name:
+            print(f'[Exporter] "{project_name}" already has a render here — '
+                  f'using {os.path.basename(project_folder)!r}', flush=True)
 
         # Live warnings channel — filled via _warn as findings appear, mirrored
         # into shared state each time so the UI shows them mid-render.
