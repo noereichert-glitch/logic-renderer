@@ -190,6 +190,8 @@ const MANGO_SVG = '<svg viewBox="0 0 42 42" fill="none" aria-label="FL Studio">'
   + '<path class="crown" d="M24.7 12.6C27.6 11.3 31.1 14.0 31.1 21.0C28.3 19.9 25.9 17.4 24.7 12.6Z"/>'
   + '<path class="crown" d="M22.9 11.5C20.5 11.0 17.9 12.2 17.9 15.2C17.9 18.5 19.8 20.4 21.5 20.8C23.3 20.2 25.9 17.7 25.8 14.3C25.7 12.6 24.4 11.4 22.9 11.5Z"/>'
   + '<path class="stem" d="M23.0 11.4C23.5 9.1 25.3 6.8 28.0 5.5" stroke-width="1.7" stroke-linecap="round"/></svg>';
+function shorten(s, n) { s = String(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
 function badgeGlyph(ext) {
   if (ext === 'logicx') return PLATTER_SVG;
   if (ext === 'als') return '<span class="wm" aria-label="Ableton Live">Live</span>';
@@ -212,7 +214,9 @@ function statusCellHTML(entry) {
       return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span>${badge}</div>`;
     }
     if (rt.status === 'failed')
-      return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed — see Inbox</span></div>`;
+      // Show the reason on the row itself (full text on hover); the Inbox has the
+      // same entry when the backend emitted a failure marker.
+      return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed${rt.detail ? ' — ' + esc(shorten(rt.detail, 60)) : ' — see Inbox'}</span></div>`;
     if (rt.status === 'done')
       // Success looks like success (owner call 2026-09-14): green as always,
       // with an amber ⚠ mark beside it when there were warnings.

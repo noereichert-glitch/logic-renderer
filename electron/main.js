@@ -84,8 +84,11 @@ function startAbletonServer(env) {
     return;
   }
   console.log('[Ableton] Using python3 dev server:', serverPath, 'on port', ABLETON_PORT);
+  // PYTHONUNBUFFERED: the Stemma server's progress prints are not flushed, and
+  // a piped stdout is block-buffered — without this its log lines only appear
+  // when the process exits, which hid the first failure's reason (2026-09-15).
   abletonProcess = spawnBackend('Ableton', 'python3', [serverPath],
-    { ...env, STEMEXPORT_PORT: String(ABLETON_PORT) });
+    { ...env, STEMEXPORT_PORT: String(ABLETON_PORT), PYTHONUNBUFFERED: '1' });
 }
 
 function startPythonServer() {
