@@ -100,12 +100,12 @@ function startPythonServer() {
     const binaryPath = path.join(process.resourcesPath, 'stemexport-server');
     command = binaryPath;
     args = [];
-    console.log('[Python] Using bundled binary:', binaryPath);
+    console.log('[Logic] Using bundled binary:', binaryPath);
   } else {
     const serverPath = path.join(__dirname, '../python/server.py');
     command = 'python3';
     args = [serverPath];
-    console.log('[Python] Using python3 dev server');
+    console.log('[Logic] Using python3 dev server');
   }
 
   // Tell the render backend which app names are US (the send-stems launcher) so its
@@ -118,10 +118,10 @@ function startPythonServer() {
   try { launcherApps.add(path.basename(process.execPath).replace(/\.app$/i, '')); } catch (e) {}
   if (!app.isPackaged) launcherApps.add('Electron');
   const launcherEnv = Array.from(launcherApps).filter(Boolean).join('\n');
-  console.log('[Python] focus-exclude launcher apps:', launcherEnv.split('\n').join(', '));
+  console.log('[Logic] focus-exclude launcher apps:', launcherEnv.split('\n').join(', '));
 
   const env = { ...process.env, STEMEXPORT_LAUNCHER_APPS: launcherEnv };
-  pythonProcess = spawnBackend('Python', command, args, env);
+  pythonProcess = spawnBackend('Logic', command, args, env);
   startAbletonServer(env);
 }
 
