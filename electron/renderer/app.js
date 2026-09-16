@@ -12,8 +12,8 @@
 const BACKENDS = { logicx: 'http://127.0.0.1:5123', als: 'http://127.0.0.1:5124' };
 const apiFor = (ext) => BACKENDS[ext];
 const hasRenderer = (entry) => !!BACKENDS[entry.ext];
-// Only the Logic backend has /export/cancel; an active Ableton render runs to the end.
-const CANCELLABLE = { logicx: true };
+// Both backends expose /export/cancel (Ableton since 2026-09-16).
+const CANCELLABLE = { logicx: true, als: true };
 const STORAGE_OUTPUT_FOLDER = 'stemExport.outputFolder';
 const SYNC_MS = 3000;          // folder mirror cadence
 const STATS_EVERY = 10;        // full du/mtime refresh every Nth sync
