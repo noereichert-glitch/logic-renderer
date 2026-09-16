@@ -247,7 +247,7 @@ function rowWarnings(entry) {
 const openWarnings = new Set();
 
 const WARN_LABEL = [
-  [/^solo/, 'Solo'], [/^muted/, 'Muted'], [/^completeness/, 'No stem'],
+  [/^solo/, 'Solo'], [/^muted/, 'Muted'], [/^completeness/, 'Empty'],
   [/^silence/, 'Silent'], [/^pass_symmetry/, 'Mismatch'], [/^raw_guard/, 'Identical'],
   [/^zip/, 'Zip'], [/^cleanup/, 'Cleanup'], [/^missing_media/, 'Missing media'], [/^empty/, 'Empty'],
 ];

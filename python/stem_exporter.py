@@ -481,9 +481,9 @@ class StemExporter:
             return []
         shown = ', '.join(missing[:5]) + ('…' if len(missing) > 5 else '')
         return [{'stage': f'completeness_{subfolder}', 'names': missing[:5],
-                 'message': f'{len(missing)} track(s) produced no stem ({shown}) — '
-                            f'empty tracks and folder stacks/VCAs never export; '
-                            f'anything else here deserves a look.'}]
+                 'message': f'{len(missing)} track(s) produced no stem ({shown}). '
+                            f'Expected for empty tracks (and folder stacks/VCAs, '
+                            f'which never export); otherwise check them in Logic.'}]
 
     # ── live mid-render checks (parser-free; warnings, never failures) ────────
     @staticmethod
