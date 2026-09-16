@@ -515,6 +515,14 @@ function setFootProgress(name, detail, pct) {
 }
 
 // ── Backend health + live rail counts ────────────────────────────────────────
+// Start-up grace: a backend that has not answered YET is "initiating", not
+// "offline" — the two Python servers take a few seconds to bind their ports
+// after the window opens (owner request 2026-09-16). "Offline" means it never
+// came up within the grace window, or it was up and went away.
+const HEALTH_GRACE_MS = 30000;
+const healthStarted = Date.now();
+const healthSeenUp = new Set();   // exts that have answered /health at least once
+
 async function pollHealth() {
   const dot = $('health-dot'), label = $('health-label');
   // One /health per backend; name the one that is down rather than hiding it
@@ -523,11 +531,20 @@ async function pollHealth() {
     try { const res = await fetch(`${base}/health`); return [ext, res.ok]; }
     catch (e) { return [ext, false]; }
   }));
-  const down = results.filter(([, ok]) => !ok).map(([ext]) => DAW_LABEL[ext]);
+  results.forEach(([ext, ok]) => { if (ok) healthSeenUp.add(ext); });
+  const inGrace = Date.now() - healthStarted < HEALTH_GRACE_MS;
+  const down = results.filter(([, ok]) => !ok).map(([ext]) => ext);
+  // Still starting: never answered yet, and the grace window is open.
+  const initiating = down.filter(ext => inGrace && !healthSeenUp.has(ext));
+  const offline = down.filter(ext => !initiating.includes(ext)).map(ext => DAW_LABEL[ext]);
+
   if (!down.length) { dot.className = 'sync-dot ok'; label.textContent = 'Renderers ready'; }
-  else if (down.length === results.length) { dot.className = 'sync-dot err'; label.textContent = 'Renderers offline'; }
-  else { dot.className = 'sync-dot warn'; label.textContent = `${down.join(' + ')} renderer offline`; }
+  else if (offline.length === results.length) { dot.className = 'sync-dot err'; label.textContent = 'Renderers offline'; }
+  else if (offline.length) { dot.className = 'sync-dot err'; label.textContent = `${offline.join(' + ')} renderer offline`; }
+  else if (initiating.length === results.length) { dot.className = 'sync-dot'; label.textContent = 'Renderers initiating…'; }
+  else { dot.className = 'sync-dot'; label.textContent = `${initiating.map(e => DAW_LABEL[e]).join(' + ')} renderer initiating…`; }
   refreshCounts();
+  return !down.length;
 }
 
 async function refreshCounts() {
@@ -634,5 +651,8 @@ refreshOutputFolderDisplay();
   await syncFolder(true);
 })();
 setInterval(syncFolder, SYNC_MS);
-pollHealth();
-setInterval(pollHealth, 5000);
+// Poll every second until both backends answer, then settle to every 5 s.
+(async function healthLoop() {
+  const ready = await pollHealth();
+  setTimeout(healthLoop, ready ? 5000 : 1000);
+})();
