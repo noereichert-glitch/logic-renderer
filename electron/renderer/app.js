@@ -360,16 +360,8 @@ function renderList() {
     b.addEventListener('click', () => cancelEntry(b.dataset.cancel)));
   list.querySelectorAll('[data-remove]').forEach(b =>
     b.addEventListener('click', () => removeEntry(b.dataset.remove)));
-  list.querySelectorAll('[data-warn-toggle]').forEach(b =>
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();               // never trigger the row's reveal-zip
-      const id = b.dataset.warnToggle;
-      const open = !openWarnings.has(id);
-      if (open) openWarnings.add(id); else openWarnings.delete(id);
-      b.setAttribute('aria-expanded', String(open));
-      const region = list.querySelector(`[data-warn-region="${CSS.escape(id)}"]`);
-      if (region) region.dataset.open = String(open);
-    }));
+  // (warning-mark clicks are delegated on the list — see initWarnToggle — so
+  // a mark rebuilt by updateRowStatus mid-render keeps working)
   list.querySelectorAll('[data-reveal]').forEach(el =>
     el.addEventListener('click', () => {
       const entry = entries.find(e => e.id === el.dataset.reveal);
@@ -665,6 +657,25 @@ refreshOutputFolderDisplay();
   await syncFolder(true);
 })();
 setInterval(syncFolder, SYNC_MS);
+// Warning mark: one delegated listener on the list. The status cell (and its
+// mark) is rebuilt on every poll while a row renders, so per-element listeners
+// bound at render time were lost — the mark looked clickable but did nothing
+// mid-render (2026-09-16).
+function initWarnToggle() {
+  $('library-list').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-warn-toggle]');
+    if (!b) return;
+    e.stopPropagation();               // never trigger the row's reveal-zip
+    const id = b.dataset.warnToggle;
+    const open = !openWarnings.has(id);
+    if (open) openWarnings.add(id); else openWarnings.delete(id);
+    b.setAttribute('aria-expanded', String(open));
+    const region = $('library-list').querySelector(`[data-warn-region="${CSS.escape(id)}"]`);
+    if (region) region.dataset.open = String(open);
+  });
+}
+initWarnToggle();
+
 // Poll every second until both backends answer, then settle to every 5 s.
 (async function healthLoop() {
   const ready = await pollHealth();
