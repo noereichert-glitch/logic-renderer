@@ -207,11 +207,11 @@ function statusCellHTML(entry) {
   if (rt) {
     if (rt.status === 'queued') return '<div class="status st-idle"><span>Queued</span></div>';
     if (rt.status === 'rendering') {
+      // Live warnings get the same clickable mark as a finished row (hover
+      // card, click to pin the cascade) so they can be read mid-render —
+      // while cancelling is still cheap (owner request 2026-09-16).
       const lw = rt.liveWarnings || [];
-      const badge = lw.length
-        ? `<span class="st-warn" title="${esc(lw.map(x => x.message).join('\n'))}">&nbsp;⚠${lw.length}</span>`
-        : '';
-      return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span>${badge}</div>`;
+      return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span>${warnMark(entry.id, lw)}</div>`;
     }
     if (rt.status === 'failed')
       // Show the reason on the row itself (full text on hover); the Inbox has the
@@ -234,6 +234,7 @@ function statusCellHTML(entry) {
 function rowWarnings(entry) {
   const rt = runtime[entry.id];
   const list = (rt && rt.status === 'done') ? rt.warnings
+             : (rt && rt.status === 'rendering') ? rt.liveWarnings
              : (!rt && meta[entry.path]) ? meta[entry.path].warnings : null;
   return warnReveal(entry.id, list);
 }
@@ -292,6 +293,19 @@ function updateRowStatus(entry) {
   const tmp = document.createElement('div');
   tmp.innerHTML = statusCellHTML(entry);
   row.replaceChild(tmp.firstChild, row.children[3]);
+  // Keep the warning cascade in step with the live warnings: rebuild it only
+  // when its content changed, so a pinned-open cascade doesn't flicker on
+  // every poll.
+  const old = row.querySelector('[data-warn-region]');
+  const html = rowWarnings(entry);
+  const oldHtml = old ? old.outerHTML : '';
+  const probe = document.createElement('div'); probe.innerHTML = html;
+  const fresh = probe.firstChild;
+  const freshHtml = fresh ? fresh.outerHTML : '';
+  if (freshHtml === oldHtml) return;
+  if (old && fresh) row.replaceChild(fresh, old);
+  else if (old) old.remove();
+  else if (fresh) row.appendChild(fresh);
 }
 
 function renderList() {
