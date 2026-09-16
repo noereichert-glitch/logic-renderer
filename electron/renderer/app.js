@@ -248,7 +248,7 @@ const openWarnings = new Set();
 const WARN_LABEL = [
   [/^solo/, 'Solo'], [/^muted/, 'Muted'], [/^completeness/, 'No stem'],
   [/^silence/, 'Silent'], [/^pass_symmetry/, 'Mismatch'], [/^raw_guard/, 'Identical'],
-  [/^zip/, 'Zip'], [/^cleanup/, 'Cleanup'],
+  [/^zip/, 'Zip'], [/^cleanup/, 'Cleanup'], [/^missing_media/, 'Missing media'],
 ];
 function warnLabel(stage) {
   const hit = WARN_LABEL.find(([re]) => re.test(stage || ''));
