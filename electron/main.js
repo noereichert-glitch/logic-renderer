@@ -77,7 +77,15 @@ function spawnBackend(label, command, args, env) {
 
 function startAbletonServer(env) {
   if (app.isPackaged) {
-    console.log('[Ableton] packaged builds do not bundle the Ableton backend yet — .als rows will show the renderer offline');
+    // Frozen by ableton-renderer/build_python.py and copied in by build.sh.
+    const binaryPath = path.join(process.resourcesPath, 'ableton-server');
+    if (!fs.existsSync(binaryPath)) {
+      console.log('[Ableton] bundled binary missing at', binaryPath, '— .als rows will show the renderer offline');
+      return;
+    }
+    console.log('[Ableton] Using bundled binary:', binaryPath, 'on port', ABLETON_PORT);
+    abletonProcess = spawnBackend('Ableton', binaryPath, [],
+      { ...env, STEMEXPORT_PORT: String(ABLETON_PORT), PYTHONUNBUFFERED: '1' });
     return;
   }
   const serverPath = findAbletonServer();
@@ -97,7 +105,9 @@ function startPythonServer() {
   let command, args;
 
   if (app.isPackaged) {
-    const binaryPath = path.join(process.resourcesPath, 'stemexport-server');
+    // Frozen by build_python.py (PyInstaller --onefile) and shipped as an
+    // app resource — the user's Mac needs no Python.
+    const binaryPath = path.join(process.resourcesPath, 'logic-server');
     command = binaryPath;
     args = [];
     console.log('[Logic] Using bundled binary:', binaryPath);

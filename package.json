@@ -1,13 +1,13 @@
 {
-  "name": "stemexport",
+  "name": "stemma",
   "version": "1.0.0",
-  "description": "Export Logic Pro stems automatically",
+  "description": "Render Logic Pro and Ableton Live stems into a verified zip",
   "main": "electron/main.js",
   "scripts": {
     "start": "./node_modules/.bin/electron .",
-    "build:python": "python3 build_python.py",
+    "build:python": "./build.sh python",
     "build:electron": "./node_modules/.bin/electron-builder",
-    "build": "python3 build_python.py && ./node_modules/.bin/electron-builder"
+    "build": "./build.sh"
   },
   "dependencies": {
     "electron-store": "^8.1.0"
@@ -17,25 +17,26 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.stemexport.app",
-    "productName": "StemExport",
+    "appId": "com.stemma.app",
+    "productName": "stemma",
     "mac": {
       "category": "public.app-category.music",
-      "target": [
-        "dmg"
-      ]
+      "target": ["dmg"],
+      "icon": "build-resources/icon.icns"
     },
     "extraResources": [
-      {
-        "from": "dist_python/stemexport-server",
-        "to": "stemexport-server"
-      }
+      { "from": "dist_python/logic-server", "to": "logic-server" },
+      { "from": "dist_python/ableton-server", "to": "ableton-server" },
+      { "from": "build-resources/ableton_remote_script", "to": "ableton_remote_script" }
     ],
     "files": [
       "electron/**/*",
       "!python/**/*",
       "!dist_python/**/*",
-      "!build/**/*"
+      "!build/**/*",
+      "!build-resources/**/*",
+      "!tests/**/*",
+      "!docs/**/*"
     ]
   }
 }

@@ -1,64 +1,55 @@
 #!/usr/bin/env python3
 """
-build_python.py — bundles the Python backend into a single executable
-using PyInstaller. Run this before electron-builder.
+build_python.py — freeze the Logic backend into ONE executable with PyInstaller,
+so the stemma app can ship it and the user's Mac needs no Python at all.
+
+Output: dist_python/logic-server
 
 Usage: python3 build_python.py
 """
-
-import subprocess
-import sys
 import os
 import shutil
+import subprocess
+import sys
 
-def run(cmd, **kwargs):
-    print(f'\n▶ {" ".join(cmd)}')
-    result = subprocess.run(cmd, **kwargs)
-    if result.returncode != 0:
-        print(f'❌ Command failed with code {result.returncode}')
-        sys.exit(1)
-    return result
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def run(cmd):
+    print('\n▶ ' + ' '.join(cmd), flush=True)
+    if subprocess.run(cmd, cwd=HERE).returncode != 0:
+        sys.exit('build failed')
+
 
 def main():
-    # Install PyInstaller if needed
-    run([sys.executable, '-m', 'pip', 'install', 'pyinstaller', '--quiet'])
+    for folder in ('build', 'dist_python'):
+        shutil.rmtree(os.path.join(HERE, folder), ignore_errors=True)
 
-    # Clean previous build
-    for folder in ['build', 'dist_python']:
-        if os.path.exists(folder):
-            shutil.rmtree(folder)
-            print(f'🗑  Cleaned {folder}/')
-
-    # Build the Python server into a single executable
     run([
-        sys.executable, '-m', 'PyInstaller',
-        '--onefile',
-        '--name', 'stemexport-server',
-        '--distpath', 'dist_python',
-        '--workpath', 'build',
-        '--specpath', 'build',
-        '--hidden-import', 'flask',
-        '--hidden-import', 'flask_cors',
-        '--hidden-import', 'librosa',
-        '--hidden-import', 'numpy',
-        '--hidden-import', 'soundfile',
-        '--hidden-import', 'anthropic',
-        '--hidden-import', 'sklearn',
-        '--hidden-import', 'scipy',
-        '--collect-all', 'librosa',
-        '--collect-all', 'soundfile',
-        'python/server.py'
+        sys.executable, '-m', 'PyInstaller', '--onefile', '--noconfirm',
+        '--name', 'logic-server',
+        '--distpath', 'dist_python', '--workpath', 'build', '--specpath', 'build',
+        # Imported lazily (inside functions / try-blocks) — PyInstaller's static
+        # scan would miss them:
+        '--hidden-import', 'yaml',        # DialogGuard rules
+        '--hidden-import', 'Quartz',      # pyobjc: the 1-second cancel (⌘. to Logic's pid)
+        '--hidden-import', 'AppKit',      # pyobjc: NSWorkspace pid lookup
+        '--hidden-import', 'Foundation',
+        # Data read at runtime, resolved through sys._MEIPASS (dialog_guard.py):
+        '--add-data', os.path.join(HERE, 'python', 'dialog_rules.yaml') + ':.',
+        # Never needed by the export path (inherited from the old app's recipe):
+        '--exclude-module', 'librosa', '--exclude-module', 'anthropic',
+        '--exclude-module', 'sklearn', '--exclude-module', 'scipy',
+        '--exclude-module', 'matplotlib', '--exclude-module', 'IPython',
+        '--exclude-module', 'tkinter', '--exclude-module', 'numpy',
+        os.path.join(HERE, 'python', 'server.py'),
     ])
 
-    # Verify output
-    binary = 'dist_python/stemexport-server'
-    if os.path.exists(binary):
-        size = os.path.getsize(binary) / (1024 * 1024)
-        print(f'\n✅ Python binary built: {binary} ({size:.1f} MB)')
-        print('   Now run: ./node_modules/.bin/electron-builder')
-    else:
-        print('❌ Binary not found after build')
-        sys.exit(1)
+    binary = os.path.join(HERE, 'dist_python', 'logic-server')
+    if not os.path.exists(binary):
+        sys.exit('binary not found after build')
+    print(f'\n✅ {binary} ({os.path.getsize(binary) / 1e6:.0f} MB)')
+
 
 if __name__ == '__main__':
     main()

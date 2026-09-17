@@ -25,6 +25,7 @@ Policy (see docs/2026-06-28/logic_dialog_catalog.md, Step 1b):
 as terminal=True so the orchestrator can fail/relaunch the job afterwards.
 """
 import os
+import sys
 import re
 
 try:
@@ -32,8 +33,21 @@ try:
 except ImportError:  # pragma: no cover - yaml is available in this env
     yaml = None
 
-_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'dialog_rules.yaml')
+def _default_rules_path():
+    """Locate dialog_rules.yaml in BOTH dev and the PyInstaller --onefile build.
+    Under PyInstaller the bundle is extracted to sys._MEIPASS and data files added
+    with --add-data land at its root; dev keeps the file next to this module.
+    (Backported from the Ableton renderer's engine, 2026-09-17.)"""
+    base = getattr(sys, '_MEIPASS', None)
+    if base:
+        bundled = os.path.join(base, 'dialog_rules.yaml')
+        if os.path.exists(bundled):
+            return bundled
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'dialog_rules.yaml')
+
+
+_RULES_PATH = _default_rules_path()
 
 # Runtime-substituted placeholders in Logic's strings → treated as wildcards when
 # matching a live dialog body against an anchor.  %@  %ld  %d  %1$s  %2$s  ^P  ^C ...
