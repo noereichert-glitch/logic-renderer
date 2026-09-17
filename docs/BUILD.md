@@ -12,7 +12,8 @@ Script it installs into Live.
 
        /opt/homebrew/opt/python@3.13/bin/python3.13 -m venv ../build-venv
        ../build-venv/bin/pip install flask==3.0.0 flask-cors==4.0.0 python-dotenv==1.0.0 \
-           pyyaml pyobjc-framework-Quartz pyobjc-framework-Cocoa numpy soundfile pyinstaller
+           pyyaml pyobjc-framework-Quartz pyobjc-framework-Cocoa pyobjc-framework-ApplicationServices \
+           numpy soundfile pyinstaller
 
    `build.sh` uses `../build-venv/bin/python` (override with `BUILD_PYTHON=`).
 3. The Ableton renderer checked out next to this repo (`../ableton-renderer`, or

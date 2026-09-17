@@ -33,7 +33,8 @@ def main():
         '--distpath', 'dist_python', '--workpath', 'build', '--specpath', 'build',
         # Imported lazily (inside functions / try-blocks) — PyInstaller's static
         # scan would miss them:
-        '--hidden-import', 'yaml',        # DialogGuard rules
+        '--hidden-import', 'yaml',
+        '--hidden-import', 'ApplicationServices',   # pyobjc: Accessibility pre-flight (permissions.py)        # DialogGuard rules
         '--hidden-import', 'Quartz',      # pyobjc: the 1-second cancel (⌘. to Logic's pid)
         '--hidden-import', 'AppKit',      # pyobjc: NSWorkspace pid lookup
         '--hidden-import', 'Foundation',

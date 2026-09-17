@@ -22,6 +22,7 @@ load_dotenv()
 from stem_exporter import StemExporter
 from logic_render import (resolve_project_path, RenderCancelled,
                           fire_bounce_abort_chord)
+from permissions import check_permissions, PermissionError_
 
 app = Flask(__name__)
 CORS(app)
@@ -125,6 +126,12 @@ def export():
     def run_export():
         global export_state, _export_in_flight
         try:
+            # Pre-flight: the Accessibility / Automation grants, checked BEFORE
+            # Logic is launched. A missing grant used to stall the render blind.
+            export_state['status_title'] = 'Checking permissions…'
+            problem = check_permissions()
+            if problem:
+                raise PermissionError_(problem)
             exporter = StemExporter(
                 file_path=file_path,
                 output_folder=output_folder,
