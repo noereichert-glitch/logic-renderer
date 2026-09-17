@@ -21,13 +21,24 @@
     "productName": "stemma",
     "mac": {
       "category": "public.app-category.music",
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "build-resources/icon.icns"
     },
     "extraResources": [
-      { "from": "dist_python/logic-server", "to": "logic-server" },
-      { "from": "dist_python/ableton-server", "to": "ableton-server" },
-      { "from": "build-resources/ableton_remote_script", "to": "ableton_remote_script" }
+      {
+        "from": "dist_python/logic-server",
+        "to": "logic-server"
+      },
+      {
+        "from": "dist_python/ableton-server",
+        "to": "ableton-server"
+      },
+      {
+        "from": "build-resources/ableton_remote_script",
+        "to": "ableton_remote_script"
+      }
     ],
     "files": [
       "electron/**/*",

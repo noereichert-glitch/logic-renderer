@@ -20,7 +20,7 @@ Script it installs into Live.
 
 ## What the build does
 
-- `build_python.py` here → `dist_python/logic-server` (PyInstaller one-file; bundles
+- `build_python.py` here → `dist_python/logic-server/` (PyInstaller one-dir; bundles
   `dialog_rules.yaml`, pyobjc for the cancel, PyYAML for DialogGuard).
 - `../ableton-renderer/build_python.py` → `ableton-server` (adds numpy + soundfile for
   the silence check), copied into `dist_python/`; the Remote Script folder is copied
@@ -37,8 +37,9 @@ Script it installs into Live.
   Electron binary behave like plain Node (the packaged app exits with code 0 and no
   output). `build.sh` unsets it for electron-builder; launch test builds from
   Terminal.app, or `env -u ELECTRON_RUN_AS_NODE dist/mac-arm64/stemma.app/Contents/MacOS/stemma`.
-- The frozen backends take ~20 s to start (one-file bundles unpack on launch); the
-  app's health pill shows "Renderers initiating…" meanwhile.
+- The frozen backends start in a few seconds (one-dir bundles; a one-file build took
+  ~20 s to unpack itself on every launch). The health pill shows "Renderers initiating…"
+  meanwhile, and Render buttons stay disabled until a row's backend answers.
 - Unsigned test builds: the recipient must right-click → Open the first time
   (Gatekeeper), or `xattr -d com.apple.quarantine stemma.app`.
 - Build artefacts (`build/`, `dist/`, `dist_python/`, `build-resources/ableton_remote_script/`)

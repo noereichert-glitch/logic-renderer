@@ -20,7 +20,8 @@ echo "== Logic backend"
 echo "== Ableton backend ($ABLETON)"
 (cd "$ABLETON" && "$PY" build_python.py)
 mkdir -p "$HERE/dist_python" "$HERE/build-resources"
-cp "$ABLETON/dist_python/ableton-server" "$HERE/dist_python/ableton-server"
+rm -rf "$HERE/dist_python/ableton-server"
+cp -R "$ABLETON/dist_python/ableton-server" "$HERE/dist_python/ableton-server"
 rm -rf "$HERE/build-resources/ableton_remote_script"
 cp -R "$ABLETON/ableton_remote_script" "$HERE/build-resources/ableton_remote_script"
 find "$HERE/build-resources/ableton_remote_script" -name "__pycache__" -type d -prune -exec rm -rf {} +

@@ -26,7 +26,9 @@ def main():
         shutil.rmtree(os.path.join(HERE, folder), ignore_errors=True)
 
     run([
-        sys.executable, '-m', 'PyInstaller', '--onefile', '--noconfirm',
+        sys.executable, '-m', 'PyInstaller', # --onedir, not --onefile: a one-file bundle unpacks itself on every launch
+        # (~20 s before the server answers); a folder starts in a second or two.
+        '--onedir', '--noconfirm',
         '--name', 'logic-server',
         '--distpath', 'dist_python', '--workpath', 'build', '--specpath', 'build',
         # Imported lazily (inside functions / try-blocks) — PyInstaller's static
@@ -45,10 +47,11 @@ def main():
         os.path.join(HERE, 'python', 'server.py'),
     ])
 
-    binary = os.path.join(HERE, 'dist_python', 'logic-server')
+    binary = os.path.join(HERE, 'dist_python', 'logic-server', 'logic-server')
     if not os.path.exists(binary):
         sys.exit('binary not found after build')
-    print(f'\n✅ {binary} ({os.path.getsize(binary) / 1e6:.0f} MB)')
+    total = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(os.path.dirname(binary)) for f in fs)
+    print(f'\n✅ {os.path.dirname(binary)}/ ({total / 1e6:.0f} MB)')
 
 
 if __name__ == '__main__':

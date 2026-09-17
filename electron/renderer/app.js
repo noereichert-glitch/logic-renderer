@@ -12,6 +12,12 @@
 const BACKENDS = { logicx: 'http://127.0.0.1:5123', als: 'http://127.0.0.1:5124' };
 const apiFor = (ext) => BACKENDS[ext];
 const hasRenderer = (entry) => !!BACKENDS[entry.ext];
+// Live health per backend (filled by pollHealth): a row is only renderable
+// while its backend answers. The frozen backends of a packaged build take a
+// few seconds to come up, and a Render pressed before that failed with a bare
+// "Failed to fetch" (owner, 2026-09-17).
+const backendUp = {};
+const rendererReady = (entry) => hasRenderer(entry) && backendUp[entry.ext] === true;
 // Both backends expose /export/cancel (Ableton since 2026-09-16).
 const CANCELLABLE = { logicx: true, als: true };
 const STORAGE_OUTPUT_FOLDER = 'stemExport.outputFolder';
@@ -325,7 +331,7 @@ function renderList() {
       const st = stats[entry.path] || {};
       const rt = runtime[entry.id];
       const busy = rt && (rt.status === 'queued' || rt.status === 'rendering');
-      const renderable = hasRenderer(entry) && !entry.missing && !busy && outputFolder;
+      const renderable = rendererReady(entry) && !entry.missing && !busy && outputFolder;
       const cancellable = busy && (rt.status === 'queued' || CANCELLABLE[entry.ext]);
 
       const row = document.createElement('div');
@@ -345,7 +351,11 @@ function renderList() {
                         : cancellable ? `Stop this render — ${DAW_LABEL[entry.ext]} quits cleanly, partial files are cleaned up`
                         : `Cancelling an active ${DAW_LABEL[entry.ext]} render isn't supported yet — it will run to the end`}">Cancel</button>`
             : `<button class="btn-render" data-render="${esc(entry.id)}" ${renderable ? '' : 'disabled'}
-                 title="${outputFolder ? (hasRenderer(entry) ? 'Render stems' : `${DAW_LABEL[entry.ext] || 'This'} renderer not connected yet`) : 'Choose an output folder first'}">Render</button>`}
+                 title="${outputFolder
+                   ? (rendererReady(entry) ? 'Render stems'
+                      : hasRenderer(entry) ? `${DAW_LABEL[entry.ext]} renderer is starting — one moment`
+                      : `${DAW_LABEL[entry.ext] || 'This'} renderer not connected yet`)
+                   : 'Choose an output folder first'}">Render</button>`}
           <button class="btn-remove" data-remove="${esc(entry.id)}" title="Remove from stemma (alias goes to Trash; original untouched)">✕</button>
         </div>
         ${rowWarnings(entry)}`;
@@ -373,7 +383,7 @@ function renderList() {
   // Render All = every renderable row in the CURRENT filtered view.
   const candidates = visible.filter(e => {
     const rt = runtime[e.id];
-    return hasRenderer(e) && !e.missing && !(rt && (rt.status === 'queued' || rt.status === 'rendering'));
+    return rendererReady(e) && !e.missing && !(rt && (rt.status === 'queued' || rt.status === 'rendering'));
   });
   const btnAll = $('btn-render-all');
   btnAll.disabled = !outputFolder || !candidates.length;
@@ -443,7 +453,10 @@ async function processQueue() {
     if (!startData.started) throw new Error(startData.error || 'Could not start export');
     await pollUntilDone(entry);
   } catch (e) {
-    runtime[activeId] = { status: 'failed', detail: e.message || 'Render failed' };
+    const msg = /failed to fetch|networkerror|load failed/i.test(e.message || '')
+      ? `${DAW_LABEL[entry.ext]} renderer did not answer — it may still be starting, or it stopped. Try again in a moment.`
+      : (e.message || 'Render failed');
+    runtime[activeId] = { status: 'failed', detail: msg };
   }
 
   activeId = null;
@@ -537,7 +550,12 @@ async function pollHealth() {
     try { const res = await fetch(`${base}/health`); return [ext, res.ok]; }
     catch (e) { return [ext, false]; }
   }));
-  results.forEach(([ext, ok]) => { if (ok) healthSeenUp.add(ext); });
+  let changed = false;
+  results.forEach(([ext, ok]) => {
+    if (ok) healthSeenUp.add(ext);
+    if (backendUp[ext] !== ok) { backendUp[ext] = ok; changed = true; }
+  });
+  if (changed) renderList();   // Render buttons follow the backends' health
   const inGrace = Date.now() - healthStarted < HEALTH_GRACE_MS;
   const down = results.filter(([, ok]) => !ok).map(([ext]) => ext);
   // Still starting: never answered yet, and the grace window is open.
