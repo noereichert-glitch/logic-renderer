@@ -1,6 +1,6 @@
 ---
 title: "Stemma Session Summary"
-subtitle: "Consolidated — through 17 September 2026"
+subtitle: "Consolidated — through 19 September 2026"
 date: "19 September 2026"
 geometry: margin=2.5cm
 fontsize: 11pt
@@ -94,81 +94,124 @@ import the module after an edit, not just compile it; Live writes silent stems w
 nothing; a process-exists "wait ready" is blind to dialogs. Summary rule set: one recap per past
 session kept forever, full chapter for the newest day, Markdown source on disk.
 
-# Session of 17 September 2026 — packaging, layer 1: a shareable build
+# Recap — 17 September 2026
 
-Owner's question at the start: "what would it take to create a sharable prototype?" Answer in
-three layers — the bundle, first-run on a stranger's Mac, distribution — and the bundle was built
-the same morning. Two decisions on the way: the Logic build had **never** been made in this repo
-(no `dist/` anywhere; the recipe was copied from the old app on 6 June and still bundled librosa
-and the Anthropic SDK), and the owner's standing rule "**push always, in any repo**" now overrides
-ableton-renderer's old "user pushes manually" convention.
+Packaging, layer 1. "What would it take to create a sharable prototype?" — answered in three
+layers and the bundle built the same morning: `logic-renderer/build.sh` freezes both backends with
+PyInstaller, gathers the Remote Script, packs the Electron app and produces
+`dist/stemma-1.0.0-arm64.dmg` (~124 MB; product renamed **stemma**, `com.stemma.app`,
+`docs/BUILD.md`). Three things bit and are now in the recipe: the Anaconda `python3` is x86_64 (a
+dedicated arm64 `build-venv` freezes the backends); an unsigned bundle carries Electron's invalid
+seal and Apple Silicon exits it silently (ad-hoc `codesign` between the `--dir` and `--prepackaged`
+steps); VS Code's `ELECTRON_RUN_AS_NODE=1` makes any Electron binary act as Node. First tests:
+"Failed to fetch" (one-file backends took 20 s to unpack → folder bundles + Render disabled until
+the backend answers `/health`); Logic stuck at "Launching…" behind the audio-interface alert
+because the packaged app had no Accessibility grant → `permissions.py` pre-flight in both backends
+(`AXIsProcessTrustedWithOptions` with prompt, Automation probe, fail fast with the exact switch).
+Owner rule set: **push after every commit, in any repo.** Explained: `main.js` vs `app.js`, why
+Electron, why the packaged app needs its own grants.
 
-## The bundle
-- `logic-renderer/build.sh` does it all: freezes both backends with PyInstaller (`logic-server`,
-  `ableton-server`), gathers the Remote Script, packs the Electron app, produces
-  `dist/stemma-1.0.0-arm64.dmg` (~124 MB). Product renamed **stemma** / `com.stemma.app`, the
-  platter as a placeholder icon, documented in `docs/BUILD.md`.
-- Both `build_python.py` recipes rewritten lean (hidden imports only for what is loaded lazily:
-  PyYAML, pyobjc, numpy + soundfile for the Ableton silence check; `dialog_rules.yaml` bundled;
-  the AI-renamer stack excluded). Logic's `dialog_guard.py` got the `sys._MEIPASS` rules-path
-  resolver backported from the Ableton engine.
-- `main.js` gained the packaged branch for the Ableton backend, so both DAWs ship.
+# Session of 19 September 2026 — documents, the first packaged Ableton render, and a fresh account
 
-## Three things that bit, all now built into the recipe
-1. **Architecture.** The `python3` on PATH is Anaconda's, which is x86_64: freezing with it put
-   Intel binaries inside an Apple-Silicon app. A dedicated arm64 build environment
-   (`working/build-venv`, Homebrew Python 3.13) now freezes them.
-2. **Signature.** Without a Developer ID, electron-builder leaves the bundle carrying Electron's
-   own, now-invalid seal, and Apple Silicon refuses to run it — no dialog, no log, the process
-   just exits. The build now ad-hoc signs the whole bundle (`codesign --force --deep --sign -`)
-   between electron-builder's `--dir` and `--prepackaged` steps; verified valid inside the dmg.
-3. **A red herring that cost an hour:** VS Code sets `ELECTRON_RUN_AS_NODE=1` in Claude's
-   terminal, which makes any Electron binary behave like plain Node and exit 0 silently. (Also:
-   `asar extract-file … package.json` writes into the current directory and clobbered the repo's
-   `package.json` once — restored.)
+Three chapters in one day: the project's documents got their own shape and look; the packaged app
+rendered Ableton for the first time after a real diagnosis; and the first test in a fresh macOS
+account showed where the next work is.
 
-## First tests on the owner's Mac
-- "Failed to fetch" on Render: the one-file backends took ~20 s to unpack on every launch and the
-  Render button never waited. Fixed twice over: backends frozen as folder bundles (`--onedir`,
-  both answer ~4 s after launch), and Render/Render All now stay disabled until that DAW's backend
-  answers a health check (tooltip "renderer is starting — one moment"); a connection failure reads
-  "renderer did not answer — it may still be starting, or it stopped".
-- Logic render stuck on "Launching Logic Pro…" with the audio-interface alert open: the packaged
-  app is a new identity to macOS with no Accessibility grant, so the driver could not see Logic's
-  windows and the DialogGuard could not dismiss the alert it handles routinely in dev. macOS does
-  not prompt for this on its own. New `permissions.py` (identical in both backends) runs before
-  the DAW is launched: `AXIsProcessTrustedWithOptions` with the prompt option (macOS shows its own
-  "would like to control this computer" dialog), then a System Events probe for the Automation
-  grant; a missing grant fails the render at once with a message naming the exact System Settings
-  switch, via the normal notification + inbox path. **Retest of this build still pending.**
+## Documents
+- **Three documents now exist** beside this summary, all in `working/Documents/` with Markdown
+  sources in `summary-source/`: the **Technical Overview** (`Stemma_Technical_Overview.pdf`, title
+  "stemma": architecture, repos, the renderer contract, both renderers, packaging, practices,
+  roadmap — written for a prospective engineering hire; renamed from "Engineering Onboarding Brief"
+  after a naming discussion: *Engineering Handbook* or *Technical Overview* are the industry names,
+  "Tech Sheet" is a hardware term) and the **Team Task List** (`Stemma_Team_Task_List_<date>.pdf`,
+  plain language, seven phases with owners: Phase 1 Phil; 2–4 Phil and Noé; 5–7 the hire with Phil
+  and Noé). Both built from the workflow and the owner's `stemma_project_brief.md`.
+- **The PDFs look like the app** (owner request: "font and colours"): Inter body, Poppins headings,
+  JetBrains Mono code, the lavender page, plum headings and links, a title tile, plum table headers.
+  Toolchain: `summary-source/render_pdf.sh` (pandoc + xelatex, `stemma-style.tex`,
+  `stemma-tables.lua`; fonts installed in `~/Library/Fonts/stemma/`, copies in `fonts/`; loading
+  fonts by path failed on this TeX Live, by family name works; code blocks are kept on one page).
+- **This summary now travels with the code:** a copy in every repository as
+  `docs/Stemma_Session_Summary.pdf` (+ `.md`), refreshed each session; the Technical Overview points
+  to it as the first thing to read.
 
-## Explained along the way (owner questions)
-`main.js` is the Electron main process — the backstage half with Mac access (spawns the backends,
-notifications, inbox, folder watching) — versus `renderer/app.js`, the on-stage web page; why
-stemma is a web page in a window (Electron: Slack, VS Code, Discord, Figma work the same way; one
-UI for macOS/Windows, fast iteration, the DAW driving is Python anyway; the cost is ~200 MB and
-memory); and why the packaged app needs its own Accessibility and Automation grants for both DAWs
-(permission follows the responsible app — Terminal in dev, stemma when packaged; Ableton's Remote
-Script socket needs none).
+## The packaged app: Logic fine, Ableton failed three times — then "rendered perfectly"
+- Owner's retest of the dmg: Logic rendered; Ableton failed 3× with *"Save button element-click
+  failed: STUCK: windows=[Save][Export Audio/Video][][set] sheets=0"* — on the With FX pass twice,
+  on the Raw pass once, while the dev app from Terminal worked minutes later.
+- **Nothing to diagnose with:** a packaged app launched from Finder has no stdout. `main.js` now
+  writes each backend's output to `~/Library/Logs/stemma/<logic|ableton>-backend.log` (rotated per
+  launch, polling routes filtered). Two facts on the way: the app in Applications was the *first*
+  17 Sept build (before the pre-flight); and an ad-hoc signature's identity is the build's
+  `cdhash`, so **every rebuild is a new app to macOS permissions** — the toggle shows ON for the
+  old build while the new one is untrusted; remove stemma from the Accessibility list and let the
+  prompt re-add it after each install (in `docs/BUILD.md`).
+- **The log said:** the trace of a failing and a succeeding attempt is identical up to the Save
+  click; the panel then either closes in 0.75 s or ignores the AXPress outright for the 5 s poll —
+  about half the attempts, same filename, same destination, same window stack. Redoing the whole
+  pass rerolled the same coin. Fix (`ableton-exporter-v5`): the commit **escalates inside the open
+  panel** — click Save; still open after 1.5 s → `AXConfirm` on the name field; still open → click
+  again; each step only while the panel exists, result `OK:<stage>` in the log. The focus sampler
+  (an osascript every 0.65 s alongside the click) is paused during modals by default. Owner: **"It
+  rendered perfectly!"** — the first end-to-end Ableton render from the packaged app.
+- "Pass 3" explained: the code numbers passes 1 With FX / 2 Returns+Master (skipped) / 3 Raw;
+  messages now say *"Raw pass failed …"* and only claim Live crashed when it did.
+
+## Permissions and failures on the row
+- A refused pre-flight (no Accessibility / Automation grant) is no longer a red "Failed": the
+  backends tag it `reason_code = permissions`, the row shows an **amber "Permission needed"**, the
+  notification is "stemma needs a permission", the inbox says "Permission needed — <project>", and
+  the message is the fix itself: *"Enable Accessibility access for stemma in System Settings ›
+  Privacy & Security › Accessibility, then relaunch stemma."*
+- Because the column can never show a whole sentence, **both the amber permission row and every
+  red Failed row now use the warnings' mark**: hover card, click to cascade the full text under
+  the row, pinned until clicked again (red variant for failures).
+- Both DAW launches keep `open`'s stderr, so a refused launch says *why* instead of printing the
+  command line.
+
+## First test in a fresh macOS account ("Stemma Build Tester")
+- Kit staged in `/Users/Shared/stemma-test` (readable by every account): the dmg, the two test
+  projects, the Remote Script folder, a README with the steps.
+- Result: both DAWs failed at launch — Live opened and closed (DialogGuard paused on an unknown
+  first-launch dialog), Logic's `open` was refused. Diagnosis agreed with the owner: **DAW licences
+  are per account** (Live's authorisation lives in the account's Library; Logic's App Store licence
+  follows the Apple ID). A second account is a poor proxy for a tester's machine on that point and a
+  good one for everything else (install, Gatekeeper, prompts, Remote Script, library folder). Plan:
+  authorise Live and run Logic once manually in that account, then test stemma; a "DAW not
+  authorised" rule joins the layer 2 list. The account had no log folder, which points at an old
+  dmg from its Desktop having been installed — the kit's 20:12 dmg is the one to use.
+- Remote Script location confirmed correct (`User Library/Remote Scripts/StemExportBridge`).
+  **Installer options** laid out: (1) the Ableton backend copies it in its pre-flight next to the
+  existing slot auto-tick, version-stamped (`.stem_export_version`, now 9) — recommended; (2) port
+  the old shell's JavaScript installer into `main.js`; (3) manual. Caveats: Live must be relaunched
+  to load it (the backend launches Live anyway); a never-run Live has no preferences to tick.
+- Explained: where the build lives (inside the repos: `logic-renderer/build.sh`, `build_python.py`
+  in each backend repo, electron-builder config in `package.json`, `build-resources/`) and how a
+  packaged app differs from `npm start` (same code, different container: frozen Python and a
+  self-contained Electron in `stemma.app` vs the source trees under Terminal's permissions).
 
 ## Git
-All pushed: logic-renderer `f898e53`, `73fed7c`, `44ed8a0` on `logic-and-UI`; ableton-renderer
-`e5df618`, `35cb5b5`, `d75f8f0` on the new `ableton-exporter-v4`.
+logic-renderer `logic-and-UI`: `726f8a2` (summary in docs), `716e438` (backend log files),
+`622aa3b` (amber permission state), `6e8f207` (clickable permission warning), `5977cf4` (failed
+rows expand, Logic launch cause). ableton-renderer: `bc52a10` on `v4` (summary in docs); new
+`ableton-exporter-v5`: `49a2f5f` (Save commit escalation), `a284755` (permission message + code),
+`8629dea` (Live launch cause). Daemon `a85e156`, Contract `e93339c` (summary in docs). All pushed.
 
 # Next steps
 
-1. **Retest the dmg** with the permissions pre-flight (trash the old copy in Applications; only
-   one stemma running). Expected: the Accessibility dialog, grant, possibly one relaunch, then a
-   render past "Launching Logic Pro…".
-2. **Packaging layer 2 — first run on a stranger's Mac:** port the Remote Script installer from
-   the old Stemma shell (`installRemoteScript` / `getAbletonUserLibraryPath`, version-stamped) into
-   the app; "Logic / Live not installed" shown honestly; default output folder on the internal
-   disk; the sleep guard surviving an app quit. Test on a fresh macOS user account (no Python, no
-   grants, licences still valid), then on a real second Mac.
-3. **Layer 3 — distribution:** Developer ID (€99/year) + notarization; electron-builder does both
-   once the certificate is in the Keychain. Until then: right-click → Open for trusted testers.
-4. **Render-complete sound** in the app (and a failure sound; owner supplies files).
-5. **Export-format option** per render: sample rate, bit depth, later the returns-and-master set.
-6. Shared roadmap as before: staging-folder redesign for Logic, pre-flight "Render anyway /
+1. **Fresh-account test, round two:** authorise Live and run Logic once in the tester account,
+   install the kit's dmg, re-add Accessibility, render both; send the red-mark text, the inbox
+   entries and `~/Library/Logs/stemma` (copy into `/Users/Shared/stemma-test/logs-tester`).
+2. **Packaging layer 2:** Remote Script installer in the Ableton backend's pre-flight (option 1);
+   honest "DAW not installed" / "DAW not authorised" states (DialogGuard rules for Live's
+   authorisation and Logic's first-run dialogs); a self-signed signing certificate so permission
+   grants survive rebuilds; default output folder on the internal disk; then a real second Mac.
+3. **Layer 3:** Developer ID + notarization (electron-builder does both once the certificate is
+   in the Keychain).
+4. **Render-complete sound** (and a failure sound; owner supplies files).
+5. **Export-format option** per render: sample rate, bit depth, later the returns-and-master set
+   (the Technical Overview already describes it as the Settings override of the native-rate rule).
+6. Keep the Technical Overview's packaging section current (it still says "state on 17 September").
+7. Shared roadmap as before: staging-folder redesign for Logic, pre-flight "Render anyway /
    Cancel", carry-overs (per-project output default, "- " stem prefix, Range decision, daemon
    inbox return, zip-only job folders, absorb daemon, collaborator notice).
