@@ -220,9 +220,13 @@ function handleServerLine(line) {
   }
   const project = (payload && payload.project) || 'project';
   const reason = (payload && payload.reason) || 'The render could not be completed.';
+  // A refused pre-flight (no Accessibility / Automation grant) is a to-do, not a
+  // failed render: calmer title, amber inbox entry (owner request 2026-09-19).
+  const blocked = !!(payload && payload.code === 'permissions');
   try {
     if (Notification.isSupported()) {
-      new Notification({ title: `Render failed — ${project}`, body: reason }).show();
+      new Notification({ title: blocked ? 'stemma needs a permission' : `Render failed — ${project}`,
+                         body: reason }).show();
     }
   } catch (e) {
     console.error('[Notify] failed to show notification:', e);
@@ -234,7 +238,8 @@ function handleServerLine(line) {
     const messages = store.get('messages', []);
     messages.unshift({
       project,
-      level: 'error',
+      level: blocked ? 'warning' : 'error',
+      kind: blocked ? 'permissions' : 'failure',
       reason,
       detail: (payload && payload.detail) || null,
       date: new Date().toISOString(),

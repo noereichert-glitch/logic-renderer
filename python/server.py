@@ -77,6 +77,7 @@ def _reset_state(output_folder):
         # Critical-failure signal (set only in run_export's terminal except).
         'project': None,
         'reason': None,
+        'reason_code': None,
         'detail': None,
     }
 
@@ -185,11 +186,15 @@ def export():
             reason = (getattr(e, 'user_message', '') or '').strip() or GENERIC_FAILURE_REASON
             export_state['project'] = project
             export_state['reason'] = reason
+            # 'permissions' when the pre-flight refused to start (no Accessibility /
+            # Automation grant): the app shows that as an amber to-do on the row,
+            # not a red failure (owner request 2026-09-19).
+            export_state['reason_code'] = getattr(e, 'code', None)
             export_state['detail'] = getattr(e, 'dialog', None) or {'message': str(e)}
             # One flushed marker line → Electron main fires the native notification
             # AND appends the in-UI inbox entry (detail = raw {title,body,buttons}).
             print(EXPORT_FAILURE_MARKER + json.dumps(
-                {'project': project, 'reason': reason,
+                {'project': project, 'reason': reason, 'code': export_state['reason_code'],
                  'detail': export_state['detail']}), flush=True)
         finally:
             with _export_lock:

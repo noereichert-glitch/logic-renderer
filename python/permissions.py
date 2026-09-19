@@ -15,17 +15,19 @@ import subprocess
 
 APP_NAME = 'stemma'
 
+# Shown on the library row (amber, not a red failure) and in the inbox, so it
+# is the fix itself, in one line (owner wording 2026-09-19). The dev-mode
+# detail (the grant belongs to Terminal.app there) goes to the log instead.
 ACCESSIBILITY_MESSAGE = (
-    f'{APP_NAME} needs Accessibility access to drive your DAW. Open System '
-    'Settings → Privacy & Security → Accessibility, switch on '
-    f'"{APP_NAME}" (or the Terminal app you launched it from), then render '
-    'again. If it is already on, quit and reopen the app once.'
+    f'Enable Accessibility access for {APP_NAME} in System Settings › Privacy & '
+    f'Security › Accessibility, then relaunch {APP_NAME}.'
 )
 AUTOMATION_MESSAGE = (
-    f'{APP_NAME} is not allowed to control System Events. Open System Settings '
-    f'→ Privacy & Security → Automation, enable "System Events" under '
-    f'"{APP_NAME}", then render again.'
+    f'Allow {APP_NAME} to control System Events in System Settings › Privacy & '
+    f'Security › Automation, then relaunch {APP_NAME}.'
 )
+DEV_HINT = ('[Permissions] In development the grant belongs to the app stemma was '
+            'launched from (Terminal.app), not to "stemma".')
 
 
 def accessibility_trusted(prompt: bool = True) -> bool:
@@ -65,22 +67,39 @@ def automation_allowed() -> tuple:
     return True, err
 
 
-def check_permissions() -> str:
-    """Friendly, actionable message if a render cannot proceed; None if fine."""
+def check_permissions():
+    """A PermissionProblem (which grant, one-line fix) if a render cannot
+    proceed; None if fine. Never raises."""
     try:
         if not accessibility_trusted(prompt=True):
-            return ACCESSIBILITY_MESSAGE
+            print(DEV_HINT, flush=True)
+            return PermissionProblem('accessibility', ACCESSIBILITY_MESSAGE)
         ok, _ = automation_allowed()
         if not ok:
-            return AUTOMATION_MESSAGE
+            print(DEV_HINT, flush=True)
+            return PermissionProblem('automation', AUTOMATION_MESSAGE)
     except Exception as e:
         print(f'[Permissions] pre-flight could not run ({e}); proceeding.', flush=True)
     return None
 
 
+class PermissionProblem(str):
+    """The pre-flight's verdict: a str (the message, so older callers and
+    f-strings keep working) that also knows which grant is missing."""
+    def __new__(cls, which, message):
+        obj = super().__new__(cls, message)
+        obj.which = which
+        obj.message = message
+        return obj
+
+
 class PermissionError_(RuntimeError):
-    """Raised by the servers when check_permissions() reports a problem; carries
-    user_message for the failure marker → notification + inbox."""
-    def __init__(self, user_message):
-        super().__init__(user_message)
-        self.user_message = user_message
+    """Raised by the servers when check_permissions() reports a problem. Carries
+    user_message for the row / notification / inbox and code='permissions' so
+    the app renders it as an amber to-do rather than a failed render."""
+    code = 'permissions'
+
+    def __init__(self, problem):
+        super().__init__(str(problem))
+        self.user_message = str(problem)
+        self.which = getattr(problem, 'which', None)

@@ -30,7 +30,7 @@ const DAW_LABEL = { logicx: 'Logic Pro', als: 'Ableton Live', flp: 'FL Studio' }
 let entries = [];        // mirror of the folder: {id, aliasPath, path, name, ext, missing}
 let stats = {};          // original path -> {exists, mtimeMs, sizeBytes}
 let meta = {};           // original path -> {date, folder, zipPath, stemCount}
-let runtime = {};        // id -> {status: queued|rendering|done|failed, detail}
+let runtime = {};        // id -> {status: queued|rendering|done|failed|blocked, detail}  (blocked = macOS grant missing)
 let queue = [];          // ids waiting to render
 let activeId = null;     // id currently rendering
 let dawFilter = 'all';
@@ -219,6 +219,10 @@ function statusCellHTML(entry) {
       const lw = rt.liveWarnings || [];
       return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span>${warnMark(entry.id, lw)}</div>`;
     }
+    if (rt.status === 'blocked')
+      // A missing macOS grant is a to-do, not a failed render: amber, with the
+      // fix itself on the row (owner request 2026-09-19); full text on hover.
+      return `<div class="status st-warn" title="${esc(rt.detail || '')}"><span>${esc(shorten(rt.detail || 'Permission needed', 96))}</span></div>`;
     if (rt.status === 'failed')
       // Show the reason on the row itself (full text on hover); the Inbox has the
       // same entry when the backend emitted a failure marker.
@@ -497,7 +501,9 @@ function pollUntilDone(entry) {
         return;
       }
       if (data.error) {
-        runtime[entry.id] = { status: 'failed', detail: data.error };
+        runtime[entry.id] = data.reason_code === 'permissions'
+          ? { status: 'blocked', detail: data.reason || data.error }
+          : { status: 'failed', detail: data.error };
         resolve();
         return;
       }
@@ -647,9 +653,11 @@ async function loadInbox() {
     const icon = isWarning
       ? `<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 15v.5" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`
       : `<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="${color}" stroke-width="1.5"/><path d="M7 7l6 6M13 7l-6 6" stroke="${color}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
-    const heading = isWarning
-      ? `Completed with warnings — ${esc(m.project || 'project')}`
-      : `Render failed — ${esc(m.project || 'project')}`;
+    const heading = m.kind === 'permissions'
+      ? `Permission needed — ${esc(m.project || 'project')}`
+      : isWarning
+        ? `Completed with warnings — ${esc(m.project || 'project')}`
+        : `Render failed — ${esc(m.project || 'project')}`;
     const item = document.createElement('div');
     item.className = 'history-item';
     item.innerHTML = `
