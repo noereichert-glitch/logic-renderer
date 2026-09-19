@@ -42,10 +42,40 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
 }
 
+// Persistent per-backend log files. A packaged app launched from Finder has no
+// stdout, so without these a failed render in the field leaves nothing behind
+// but the one-line inbox reason (2026-09-19: three Ableton failures on the
+// owner's Mac, undiagnosable). One file per backend under the app's log folder
+// (~/Library/Logs/stemma/), rotated once per launch (.log -> .log.1). The
+// routine Flask request lines for the two polling routes are left out so the
+// file stays readable; everything else the backend prints is kept, timestamped.
+const NOISY_REQUEST = /"GET \/(health|export\/progress) /;
+function openBackendLog(label) {
+  try {
+    const dir = app.getPath('logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${label.toLowerCase()}-backend.log`);
+    try { fs.renameSync(file, `${file}.1`); } catch (e) { /* first launch */ }
+    const stream = fs.createWriteStream(file, { flags: 'a' });
+    stream.write(`${new Date().toISOString()} [stemma] ${label} backend log opened `
+      + `(packaged=${app.isPackaged}, version=${app.getVersion()})\n`);
+    console.log(`[${label}] logging to ${file}`);
+    return stream;
+  } catch (e) {
+    console.error(`[${label}] could not open backend log:`, e.message);
+    return null;
+  }
+}
+
 // Spawn one DAW backend and wire its stdout/stderr into the log and the marker
 // protocol ([[EXPORT_FAILURE]] / [[EXPORT_WARNING]] → notifications + inbox).
 function spawnBackend(label, command, args, env) {
   const proc = spawn(command, args, { env });
+  const logFile = openBackendLog(label);
+  const logLine = (stream, text) => {
+    if (!logFile || NOISY_REQUEST.test(text)) return;
+    try { logFile.write(`${new Date().toISOString()} [${stream}] ${text}\n`); } catch (e) { /* disk full etc. */ }
+  };
 
   // Line-buffer the server's stdout: chunks can split mid-line, so accumulate and
   // dispatch only on complete '\n'-terminated lines. Each line is logged, and a
@@ -58,6 +88,7 @@ function spawnBackend(label, command, args, env) {
       const line = stdoutBuffer.slice(0, nl);
       stdoutBuffer = stdoutBuffer.slice(nl + 1);
       console.log(`[${label}]`, line);
+      logLine('out', line);
       handleServerLine(line);
     }
   });
@@ -67,10 +98,13 @@ function spawnBackend(label, command, args, env) {
     // poll) alongside genuine tracebacks — label it neutrally; real errors are
     // recognizable by their content.
     console.error(`[${label}]`, data.toString());
+    data.toString().split('\n').filter(Boolean).forEach(l => logLine('err', l));
   });
 
   proc.on('close', (code) => {
     console.log(`[${label}] exited with code`, code);
+    logLine('stemma', `backend exited with code ${code}`);
+    if (logFile) logFile.end();
   });
   return proc;
 }

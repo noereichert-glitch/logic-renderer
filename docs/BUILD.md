@@ -43,5 +43,17 @@ Script it installs into Live.
   meanwhile, and Render buttons stay disabled until a row's backend answers.
 - Unsigned test builds: the recipient must right-click → Open the first time
   (Gatekeeper), or `xattr -d com.apple.quarantine stemma.app`.
+- **Every ad-hoc build is a new identity to macOS permissions.** An ad-hoc signature's
+  designated requirement is the bundle's `cdhash` (`codesign -d -r- stemma.app`), so
+  Accessibility / Automation grants made for one build do not carry over to the next:
+  the toggle in System Settings can show ON while the new build is not actually trusted
+  (a DAW driven with no AX access looks like a hang or a dialog that never dismisses).
+  After installing a new build, remove stemma from Privacy & Security → Accessibility
+  (the "–" button) and let the pre-flight prompt re-add it; expect the Automation
+  prompt for System Events again. A Developer ID signature is identity-based and
+  removes this problem.
+- **Backend logs** of a packaged app: `~/Library/Logs/stemma/logic-backend.log` and
+  `ableton-backend.log` (previous launch in `.log.1`). Everything the backends print,
+  minus the two polling routes. Ask a tester for these files before anything else.
 - Build artefacts (`build/`, `dist/`, `dist_python/`, `build-resources/ableton_remote_script/`)
   are git-ignored; `build-resources/icon.icns` (generated from `icon.svg`) is tracked.
