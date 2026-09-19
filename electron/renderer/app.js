@@ -226,9 +226,11 @@ function statusCellHTML(entry) {
       // too narrow to show it inline (owner request 2026-09-19).
       return `<div class="status st-warn"><span>Permission needed</span>${warnMark(entry.id, rt.warnings)}</div>`;
     if (rt.status === 'failed')
-      // Show the reason on the row itself (full text on hover); the Inbox has the
-      // same entry when the backend emitted a failure marker.
-      return `<div class="status st-err" title="${esc(rt.detail || '')}"><span>Failed${rt.detail ? ' — ' + esc(shorten(rt.detail, 60)) : ' — see Inbox'}</span></div>`;
+      // The reason travels like a warning — red mark, hover card, click to
+      // cascade the full text under the row — because the column can never
+      // show a whole error inline (owner request 2026-09-19). The Inbox has
+      // the same entry when the backend emitted a failure marker.
+      return `<div class="status st-err"><span>Failed</span>${warnMark(entry.id, rt.warnings, 'err')}</div>`;
     if (rt.status === 'done')
       // Success looks like success (owner call 2026-09-14): green as always,
       // with an amber ⚠ mark beside it when there were warnings.
@@ -245,7 +247,7 @@ function statusCellHTML(entry) {
 // of the row (grid-column 1/-1) so it drops in under all the columns.
 function rowWarnings(entry) {
   const rt = runtime[entry.id];
-  const list = (rt && (rt.status === 'done' || rt.status === 'blocked')) ? rt.warnings
+  const list = (rt && (rt.status === 'done' || rt.status === 'blocked' || rt.status === 'failed')) ? rt.warnings
              : (rt && rt.status === 'rendering') ? rt.liveWarnings
              : (!rt && meta[entry.path]) ? meta[entry.path].warnings : null;
   return warnReveal(entry.id, list);
@@ -262,7 +264,7 @@ const WARN_LABEL = [
   [/^solo/, 'Solo'], [/^muted/, 'Muted'], [/^completeness/, 'Empty'],
   [/^silence/, 'Silent'], [/^pass_symmetry/, 'Mismatch'], [/^raw_guard/, 'Identical'],
   [/^zip/, 'Zip'], [/^cleanup/, 'Cleanup'], [/^missing_media/, 'Missing media'], [/^empty/, 'Empty'],
-  [/^permissions/, 'Permission'],
+  [/^permissions/, 'Permission'], [/^failed/, 'Failed'],
 ];
 function warnLabel(stage) {
   const hit = WARN_LABEL.find(([re]) => re.test(stage || ''));
@@ -280,13 +282,22 @@ function emphasize(message, names) {
   return html;
 }
 
-function warnMark(id, warnings) {
+// A failed row carries its reason as a one-item list so the mark / cascade
+// machinery below can show it in full (stage 'failed' -> red, label 'Failed').
+function failedState(detail) {
+  const message = detail || 'The render could not be completed — see Inbox.';
+  return { status: 'failed', detail: message,
+           warnings: [{ stage: 'failed', message, names: [] }] };
+}
+
+function warnMark(id, warnings, tone) {
   const list = warnings || [];
   if (!list.length) return '';
   const open = openWarnings.has(id);
   const items = list.map(w => `<li>${esc(w.message || '')}</li>`).join('');
-  return `<span class="mark-wrap"><button class="mark" aria-expanded="${open}" data-warn-toggle="${esc(id)}" aria-label="${list.length} warnings">⚠<span class="chev">▾</span></button>
-    <div class="pop"><h4>${list.length} warning${list.length !== 1 ? 's' : ''} · click to pin</h4><ul>${items}</ul></div></span>`;
+  const noun = tone === 'err' ? 'reason' : 'warning';
+  return `<span class="mark-wrap"><button class="mark${tone === 'err' ? ' err' : ''}" aria-expanded="${open}" data-warn-toggle="${esc(id)}" aria-label="${list.length} ${noun}s">⚠<span class="chev">▾</span></button>
+    <div class="pop"><h4>${list.length} ${noun}${list.length !== 1 ? 's' : ''} · click to pin</h4><ul>${items}</ul></div></span>`;
 }
 
 function warnReveal(id, warnings) {
@@ -294,7 +305,7 @@ function warnReveal(id, warnings) {
   if (!list.length) return '';
   const open = openWarnings.has(id);
   const items = list.map(w =>
-    `<div class="item"><span class="m">⚠</span><span class="k">${esc(warnLabel(w.stage))}</span><span>${emphasize(w.message, w.names)}</span></div>`).join('');
+    `<div class="item${/^failed/.test(w.stage || '') ? ' err' : ''}"><span class="m">⚠</span><span class="k">${esc(warnLabel(w.stage))}</span><span>${emphasize(w.message, w.names)}</span></div>`).join('');
   return `<div class="reveal" data-open="${open}" data-warn-region="${esc(id)}"><div><div class="inner">${items}</div></div></div>`;
 }
 
@@ -463,7 +474,7 @@ async function processQueue() {
     const msg = /failed to fetch|networkerror|load failed/i.test(e.message || '')
       ? `${DAW_LABEL[entry.ext]} renderer did not answer — it may still be starting, or it stopped. Try again in a moment.`
       : (e.message || 'Render failed');
-    runtime[activeId] = { status: 'failed', detail: msg };
+    runtime[activeId] = failedState(msg);
   }
 
   activeId = null;
@@ -507,7 +518,7 @@ function pollUntilDone(entry) {
         runtime[entry.id] = data.reason_code === 'permissions'
           ? { status: 'blocked', detail: data.reason || data.error,
               warnings: [{ stage: 'permissions', message: data.reason || data.error, names: [] }] }
-          : { status: 'failed', detail: data.error };
+          : failedState(data.error);
         resolve();
         return;
       }

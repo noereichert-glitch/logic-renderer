@@ -621,7 +621,15 @@ class LogicRenderBridge:
                   f'launcher_frontmost={self._launcher_frontmost!r}', flush=True)
         cmd = ['open', '-g', '-a', self.app_path, resolved] if self.headless \
             else ['open', '-a', self.app_path, resolved]
-        subprocess.run(cmd, check=True)
+        # Say WHY when Launch Services refuses (fresh-account test 2026-09-19: the
+        # row only showed "Command '['open', '-g', '-a', …" — the argv, not the
+        # cause). `open` puts the reason on stderr (app not found, file not
+        # readable by this user, LSOpenURLsWithRole error …).
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            why = (r.stderr or r.stdout or '').strip() or f'exit status {r.returncode}'
+            raise RuntimeError(
+                f'Could not open Logic Pro with "{os.path.basename(resolved)}": {why}')
         self.process_name = detect_logic_process_name()
 
     def relaunch(self, project_path: str):

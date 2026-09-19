@@ -139,6 +139,9 @@ button{font-family:inherit}
 .mark{display:inline-flex;align-items:center;gap:3px;color:var(--warn);font-size:12.5px;line-height:1;padding:2px 5px;border-radius:6px;
   cursor:pointer;background:transparent;border:none;font-family:inherit;transition:background .18s var(--ease)}
 .mark:hover,.mark[aria-expanded="true"]{background:var(--warn-dim)}
+/* failed rows reuse the mark + cascade in the error colour */
+.mark.err{color:var(--err)} .mark.err:hover,.mark.err[aria-expanded="true"]{background:rgba(197,71,63,.12)}
+.reveal .item.err .m,.reveal .item.err .k{color:var(--err)}
 .mark:focus-visible{outline:2px solid var(--accent-strong);outline-offset:2px}
 .mark .chev{display:inline-block;font-size:9px;transition:transform .28s var(--ease)}
 .mark[aria-expanded="true"] .chev{transform:rotate(180deg)}
