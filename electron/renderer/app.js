@@ -220,9 +220,11 @@ function statusCellHTML(entry) {
       return `<div class="status st-sync"><span class="ring"></span><span>${esc(rt.detail || 'Rendering…')}</span>${warnMark(entry.id, lw)}</div>`;
     }
     if (rt.status === 'blocked')
-      // A missing macOS grant is a to-do, not a failed render: amber, with the
-      // fix itself on the row (owner request 2026-09-19); full text on hover.
-      return `<div class="status st-warn" title="${esc(rt.detail || '')}"><span>${esc(shorten(rt.detail || 'Permission needed', 96))}</span></div>`;
+      // A missing macOS grant is a to-do, not a failed render: amber, and the
+      // fix itself travels like any warning — the same ⚠ mark (hover card,
+      // click to cascade the full sentence under the row), since the column is
+      // too narrow to show it inline (owner request 2026-09-19).
+      return `<div class="status st-warn"><span>Permission needed</span>${warnMark(entry.id, rt.warnings)}</div>`;
     if (rt.status === 'failed')
       // Show the reason on the row itself (full text on hover); the Inbox has the
       // same entry when the backend emitted a failure marker.
@@ -243,7 +245,7 @@ function statusCellHTML(entry) {
 // of the row (grid-column 1/-1) so it drops in under all the columns.
 function rowWarnings(entry) {
   const rt = runtime[entry.id];
-  const list = (rt && rt.status === 'done') ? rt.warnings
+  const list = (rt && (rt.status === 'done' || rt.status === 'blocked')) ? rt.warnings
              : (rt && rt.status === 'rendering') ? rt.liveWarnings
              : (!rt && meta[entry.path]) ? meta[entry.path].warnings : null;
   return warnReveal(entry.id, list);
@@ -260,6 +262,7 @@ const WARN_LABEL = [
   [/^solo/, 'Solo'], [/^muted/, 'Muted'], [/^completeness/, 'Empty'],
   [/^silence/, 'Silent'], [/^pass_symmetry/, 'Mismatch'], [/^raw_guard/, 'Identical'],
   [/^zip/, 'Zip'], [/^cleanup/, 'Cleanup'], [/^missing_media/, 'Missing media'], [/^empty/, 'Empty'],
+  [/^permissions/, 'Permission'],
 ];
 function warnLabel(stage) {
   const hit = WARN_LABEL.find(([re]) => re.test(stage || ''));
@@ -502,7 +505,8 @@ function pollUntilDone(entry) {
       }
       if (data.error) {
         runtime[entry.id] = data.reason_code === 'permissions'
-          ? { status: 'blocked', detail: data.reason || data.error }
+          ? { status: 'blocked', detail: data.reason || data.error,
+              warnings: [{ stage: 'permissions', message: data.reason || data.error, names: [] }] }
           : { status: 'failed', detail: data.error };
         resolve();
         return;
