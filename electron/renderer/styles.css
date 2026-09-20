@@ -170,6 +170,8 @@ button{font-family:inherit}
 .reveal .m{color:var(--warn);text-align:center}
 .reveal .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--warn);padding-top:2px}
 .reveal b{color:var(--text);font-weight:500}
+/* the permission message's action step is real bold — it is the part people skip */
+.reveal .item.perm b,.pop b{font-weight:700;color:var(--text)}
 @media (prefers-reduced-motion:reduce){.mark .chev,.pop,.reveal,.reveal .item > span{transition:none}}
 .st-done:hover{text-decoration:underline}
 .ring{width:14px;height:14px;border-radius:50%;flex-shrink:0;

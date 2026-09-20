@@ -294,7 +294,7 @@ function warnMark(id, warnings, tone) {
   const list = warnings || [];
   if (!list.length) return '';
   const open = openWarnings.has(id);
-  const items = list.map(w => `<li>${esc(w.message || '')}</li>`).join('');
+  const items = list.map(w => `<li>${emphasize(w.message, w.names)}</li>`).join('');
   const noun = tone === 'err' ? 'reason' : 'warning';
   return `<span class="mark-wrap"><button class="mark${tone === 'err' ? ' err' : ''}" aria-expanded="${open}" data-warn-toggle="${esc(id)}" aria-label="${list.length} ${noun}s">⚠<span class="chev">▾</span></button>
     <div class="pop"><h4>${list.length} ${noun}${list.length !== 1 ? 's' : ''} · click to pin</h4><ul>${items}</ul></div></span>`;
@@ -305,7 +305,7 @@ function warnReveal(id, warnings) {
   if (!list.length) return '';
   const open = openWarnings.has(id);
   const items = list.map(w =>
-    `<div class="item${/^failed/.test(w.stage || '') ? ' err' : ''}"><span class="m">⚠</span><span class="k">${esc(warnLabel(w.stage))}</span><span>${emphasize(w.message, w.names)}</span></div>`).join('');
+    `<div class="item${/^failed/.test(w.stage || '') ? ' err' : ''}${/^permissions/.test(w.stage || '') ? ' perm' : ''}"><span class="m">⚠</span><span class="k">${esc(warnLabel(w.stage))}</span><span>${emphasize(w.message, w.names)}</span></div>`).join('');
   return `<div class="reveal" data-open="${open}" data-warn-region="${esc(id)}"><div><div class="inner">${items}</div></div></div>`;
 }
 
@@ -391,7 +391,12 @@ function renderList() {
   // (warning-mark clicks are delegated on the list — see initWarnToggle — so
   // a mark rebuilt by updateRowStatus mid-render keeps working)
   list.querySelectorAll('[data-reveal]').forEach(el =>
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (e) => {
+      // The ⚠ mark sits inside this cell; its click is the warning toggle
+      // only (owner, 2026-09-20). The list-level stopPropagation in
+      // initWarnToggle runs AFTER this element-level listener, so it
+      // cannot prevent the reveal — ignore the mark here instead.
+      if (e.target.closest('.mark-wrap')) return;
       const entry = entries.find(e => e.id === el.dataset.reveal);
       const lr = entry && meta[entry.path];
       if (lr && lr.zipPath) window.electronAPI.revealInFinder(lr.zipPath);
@@ -517,7 +522,10 @@ function pollUntilDone(entry) {
       if (data.error) {
         runtime[entry.id] = data.reason_code === 'permissions'
           ? { status: 'blocked', detail: data.reason || data.error,
-              warnings: [{ stage: 'permissions', message: data.reason || data.error, names: [] }] }
+              // 'names' are brightened in the cascade and the hover card; the
+              // relaunch step is the part people skip (owner, 2026-09-20).
+              warnings: [{ stage: 'permissions', message: data.reason || data.error,
+                           names: ['then relaunch stemma'] }] }
           : failedState(data.error);
         resolve();
         return;
