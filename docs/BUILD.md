@@ -52,6 +52,10 @@ Script it installs into Live.
   (the "–" button) and let the pre-flight prompt re-add it; expect the Automation
   prompt for System Events again. A Developer ID signature is identity-based and
   removes this problem.
+- **Remote Script**: shipped as `Resources/ableton_remote_script/`; the Ableton backend
+  installs it into Live's User Library on each render if missing or stale
+  (`ableton-renderer/python/remote_script_installer.py`, `STEMEXPORT_REMOTE_SCRIPT_SRC`
+  from main.js). Bump `BRIDGE_VERSION` there when `StemExportBridge.py` changes.
 - **Backend logs** of a packaged app: `~/Library/Logs/stemma/logic-backend.log` and
   `ableton-backend.log` (previous launch in `.log.1`). Everything the backends print,
   minus the two polling routes. Ask a tester for these files before anything else.

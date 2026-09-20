@@ -118,8 +118,12 @@ function startAbletonServer(env) {
       return;
     }
     console.log('[Ableton] Using bundled binary:', binaryPath, 'on port', ABLETON_PORT);
+    // The backend installs the Remote Script into Live's User Library itself
+    // (remote_script_installer.py); tell it where the shipped copy is.
+    const scriptSrc = path.join(process.resourcesPath, 'ableton_remote_script');
     abletonProcess = spawnBackend('Ableton', binaryPath, [],
-      { ...env, STEMEXPORT_PORT: String(ABLETON_PORT), PYTHONUNBUFFERED: '1' });
+      { ...env, STEMEXPORT_PORT: String(ABLETON_PORT), PYTHONUNBUFFERED: '1',
+        STEMEXPORT_REMOTE_SCRIPT_SRC: scriptSrc });
     return;
   }
   const serverPath = findAbletonServer();
@@ -131,8 +135,10 @@ function startAbletonServer(env) {
   // PYTHONUNBUFFERED: the Ableton server's progress prints are not flushed, and
   // a piped stdout is block-buffered — without this its log lines only appear
   // when the process exits, which hid the first failure's reason (2026-09-15).
+  const scriptSrc = path.resolve(path.dirname(serverPath), '..', 'ableton_remote_script');
   abletonProcess = spawnBackend('Ableton', 'python3', [serverPath],
-    { ...env, STEMEXPORT_PORT: String(ABLETON_PORT), PYTHONUNBUFFERED: '1' });
+    { ...env, STEMEXPORT_PORT: String(ABLETON_PORT), PYTHONUNBUFFERED: '1',
+      STEMEXPORT_REMOTE_SCRIPT_SRC: scriptSrc });
 }
 
 function startPythonServer() {
