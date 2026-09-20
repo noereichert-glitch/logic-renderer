@@ -173,7 +173,11 @@ button{font-family:inherit}
 /* the permission message's action step is real bold — it is the part people skip */
 .reveal .item.perm b,.pop b{font-weight:700;color:var(--text)}
 @media (prefers-reduced-motion:reduce){.mark .chev,.pop,.reveal,.reveal .item > span{transition:none}}
-.st-done:hover{text-decoration:underline}
+/* The clickable part of a rendered row is the check + text pill; it lights up
+   like the warning mark (same padding/radius, green tint) and ONLY it — hovering
+   the mark no longer touches the text (owner, 2026-09-20). */
+.st-done .pill{display:inline-flex;align-items:center;gap:7px;padding:2px 5px;margin:-2px -5px;border-radius:6px;transition:background .15s var(--ease)}
+.st-done .pill:hover{background:rgba(58,163,92,.12)}
 .ring{width:14px;height:14px;border-radius:50%;flex-shrink:0;
   border:2px solid rgba(92,75,112,.22);border-top-color:var(--accent);animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}

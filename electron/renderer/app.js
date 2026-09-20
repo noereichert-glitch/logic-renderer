@@ -234,12 +234,12 @@ function statusCellHTML(entry) {
     if (rt.status === 'done')
       // Success looks like success (owner call 2026-09-14): green as always,
       // with an amber ⚠ mark beside it when there were warnings.
-      return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Done — show .zip</span>${warnMark(entry.id, rt.warnings)}</div>`;
+      return `<div class="status st-done" data-reveal="${esc(entry.id)}"><span class="pill">${CHECK_SVG}<span>Done — show .zip</span></span>${warnMark(entry.id, rt.warnings)}</div>`;
   }
   if (!hasRenderer(entry)) return '<div class="status st-idle"><span>Renderer coming soon</span></div>';
   const lr = meta[entry.path];
   if (lr)
-    return `<div class="status st-done" data-reveal="${esc(entry.id)}">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span>${warnMark(entry.id, lr.warnings)}</div>`;
+    return `<div class="status st-done" data-reveal="${esc(entry.id)}"><span class="pill">${CHECK_SVG}<span>Rendered ${fmtDate(Date.parse(lr.date))}</span></span>${warnMark(entry.id, lr.warnings)}</div>`;
   return '<div class="status st-idle"><span>Ready</span></div>';
 }
 
