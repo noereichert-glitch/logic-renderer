@@ -224,7 +224,9 @@ function statusCellHTML(entry) {
       // fix itself travels like any warning — the same ⚠ mark (hover card,
       // click to cascade the full sentence under the row), since the column is
       // too narrow to show it inline (owner request 2026-09-19).
-      return `<div class="status st-warn"><span>Permission needed</span>${warnMark(entry.id, rt.warnings)}</div>`;
+      // One pill for the text AND the mark (owner, 2026-09-20): the whole
+      // thing hovers and toggles together.
+      return `<div class="status st-warn">${warnMark(entry.id, rt.warnings, 'warn', 'Permission needed')}</div>`;
     if (rt.status === 'failed')
       // The reason travels like a warning — red mark, hover card, click to
       // cascade the full text under the row — because the column can never
@@ -290,13 +292,16 @@ function failedState(detail) {
            warnings: [{ stage: 'failed', message, names: [] }] };
 }
 
-function warnMark(id, warnings, tone) {
+function warnMark(id, warnings, tone, label) {
   const list = warnings || [];
   if (!list.length) return '';
   const open = openWarnings.has(id);
   const items = list.map(w => `<li>${emphasize(w.message, w.names)}</li>`).join('');
   const noun = tone === 'err' ? 'reason' : 'warning';
-  return `<span class="mark-wrap"><button class="mark${tone === 'err' ? ' err' : ''}" aria-expanded="${open}" data-warn-toggle="${esc(id)}" aria-label="${list.length} ${noun}s">⚠<span class="chev">▾</span></button>
+  // With a label the status text sits INSIDE the button, so text and mark
+  // form one pill that hovers and toggles together.
+  const lbl = label ? `<span class="lbl">${esc(label)}</span>` : '';
+  return `<span class="mark-wrap"><button class="mark${tone === 'err' ? ' err' : ''}${label ? ' wide' : ''}" aria-expanded="${open}" data-warn-toggle="${esc(id)}" aria-label="${list.length} ${noun}s">${lbl}<span class="sym">⚠</span><span class="chev">▾</span></button>
     <div class="pop"><h4>${list.length} ${noun}${list.length !== 1 ? 's' : ''} · click to pin</h4><ul>${items}</ul></div></span>`;
 }
 

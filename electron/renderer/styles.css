@@ -139,6 +139,8 @@ button{font-family:inherit}
 .mark{display:inline-flex;align-items:center;gap:3px;color:var(--warn);font-size:12.5px;line-height:1;padding:2px 5px;border-radius:6px;
   cursor:pointer;background:transparent;border:none;font-family:inherit;transition:background .18s var(--ease)}
 .mark:hover,.mark[aria-expanded="true"]{background:var(--warn-dim)}
+/* a labelled mark: status text + ⚠ in one pill (the permission row) */
+.mark.wide{gap:5px;font-size:11.5px} .mark .lbl{font-size:11.5px} .mark .sym{font-size:12.5px}
 /* failed rows reuse the mark + cascade in the error colour */
 .mark.err{color:var(--err)} .mark.err:hover,.mark.err[aria-expanded="true"]{background:rgba(197,71,63,.12)}
 .reveal .item.err .m,.reveal .item.err .k{color:var(--err)}
