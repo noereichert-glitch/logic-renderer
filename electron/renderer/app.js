@@ -232,7 +232,7 @@ function statusCellHTML(entry) {
       // cascade the full text under the row — because the column can never
       // show a whole error inline (owner request 2026-09-19). The Inbox has
       // the same entry when the backend emitted a failure marker.
-      return `<div class="status st-err"><span>Failed</span>${warnMark(entry.id, rt.warnings, 'err')}</div>`;
+      return `<div class="status st-err">${warnMark(entry.id, rt.warnings, 'err', 'Failed')}</div>`;
     if (rt.status === 'done')
       // Success looks like success (owner call 2026-09-14): green as always,
       // with an amber ⚠ mark beside it when there were warnings.
